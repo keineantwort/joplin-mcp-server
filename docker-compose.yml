@@ -1,0 +1,46 @@
+services:
+  joplin-cli:
+    build:
+      context: ./joplin-cli
+    container_name: joplin-cli
+    restart: unless-stopped
+    environment:
+      - JOPLIN_SERVER_URL=${JOPLIN_SERVER_URL}
+      - JOPLIN_SERVER_USER=${JOPLIN_SERVER_USER}
+      - JOPLIN_SERVER_PASSWORD=${JOPLIN_SERVER_PASSWORD}
+      - JOPLIN_TOKEN=${JOPLIN_TOKEN}
+      - SYNC_INTERVAL=${SYNC_INTERVAL:-300}
+    volumes:
+      - joplin-cli-data:/root/.config/joplin
+    networks:
+      - joplin-mcp-net
+
+  joplin-mcp:
+    build:
+      context: .
+    container_name: joplin-mcp
+    restart: unless-stopped
+    environment:
+      - JOPLIN_TOKEN=${JOPLIN_TOKEN}
+      - JOPLIN_HOST=joplin-cli
+      - JOPLIN_PORT=41184
+      - MCP_TRANSPORT=streamable-http
+      - JOPLIN_NOTEBOOK_FILTER=${JOPLIN_NOTEBOOK_FILTER:-}
+    ports:
+      - "${MCP_PORT:-8000}:8000"
+    depends_on:
+      joplin-cli:
+        condition: service_healthy
+    networks:
+      - joplin-mcp-net
+
+volumes:
+  joplin-cli-data:
+
+networks:
+  joplin-mcp-net:
+    # To join an existing network (e.g. where joplin-server runs), set:
+    #   external: true
+    #   name: <your-existing-docker-network>
+    # and remove the default driver below.
+    driver: bridge

@@ -1,274 +1,303 @@
-"""Joplin MCP Server implementation."""
+"""Joplin MCP Server implementation.
+
+Supports both stdio (local/Claude Desktop) and streamable-http (remote/Claude.ai) transport.
+Configurable via environment variables.
+"""
 
 import logging
+import os
 import sys
-from typing import Dict, List, Any, Optional
-from datetime import datetime
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
-from pydantic import BaseModel
 
 # Add the src directory to the Python path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.joplin.joplin_api import JoplinAPI, JoplinNote, OrderDirection
+from src.joplin.joplin_api import JoplinAPI, JoplinFolder
 from src.joplin.joplin_utils import get_token_from_env, MarkdownContent
-
-# Initialize FastMCP server
-mcp = FastMCP("joplin")
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
+# Configuration from environment
+JOPLIN_HOST = os.environ.get("JOPLIN_HOST", "localhost")
+JOPLIN_PORT = os.environ.get("JOPLIN_PORT", "41184")
+JOPLIN_BASE_URL = f"http://{JOPLIN_HOST}:{JOPLIN_PORT}"
+MCP_TRANSPORT = os.environ.get("MCP_TRANSPORT", "stdio")
+NOTEBOOK_FILTER = [
+    n.strip()
+    for n in os.environ.get("JOPLIN_NOTEBOOK_FILTER", "").split(",")
+    if n.strip()
+]
+
+# Initialize FastMCP server
+mcp = FastMCP("joplin")
+
 # Initialize Joplin API client
 try:
-    api = JoplinAPI(token=get_token_from_env())
-    logger.info("Successfully initialized Joplin API client")
+    api = JoplinAPI(token=get_token_from_env(), base_url=JOPLIN_BASE_URL)
+    logger.info("Joplin API client initialized (%s)", JOPLIN_BASE_URL)
 except Exception as e:
-    logger.error(f"Failed to initialize Joplin API client: {e}")
+    logger.error("Failed to initialize Joplin API client: %s", e)
     api = None
 
-# Input Models
-class SearchNotesInput(BaseModel):
-    """Input parameters for searching notes."""
-    query: str
-    limit: Optional[int] = 100
+# --- Notebook filter helpers ---
 
-class CreateNoteInput(BaseModel):
-    """Input parameters for creating a note."""
-    title: str
-    body: Optional[str] = None
-    parent_id: Optional[str] = None
-    is_todo: Optional[bool] = False
+_allowed_folder_ids: set[str] | None = None
 
-class UpdateNoteInput(BaseModel):
-    """Input parameters for updating a note."""
-    note_id: str
-    title: Optional[str] = None
-    body: Optional[str] = None
-    parent_id: Optional[str] = None
-    is_todo: Optional[bool] = None
 
-class ImportMarkdownInput(BaseModel):
-    """Input parameters for importing markdown files."""
-    file_path: str
+def _get_allowed_folder_ids() -> set[str] | None:
+    """Return set of allowed folder IDs based on JOPLIN_NOTEBOOK_FILTER, or None if unfiltered."""
+    global _allowed_folder_ids
+    if not NOTEBOOK_FILTER:
+        return None
+    if _allowed_folder_ids is not None:
+        return _allowed_folder_ids
+    if not api:
+        return None
+    try:
+        folders = api.get_folders()
+        _allowed_folder_ids = {
+            f.id for f in folders if f.title in NOTEBOOK_FILTER
+        }
+        logger.info(
+            "Notebook filter active: %s -> %d folder(s)",
+            NOTEBOOK_FILTER,
+            len(_allowed_folder_ids),
+        )
+        return _allowed_folder_ids
+    except Exception as e:
+        logger.error("Failed to resolve notebook filter: %s", e)
+        return None
 
-# MCP Tools
+
+def _folder_allowed(folder_id: str | None) -> bool:
+    """Check if a folder ID is in the allowed set (or filter is disabled)."""
+    allowed = _get_allowed_folder_ids()
+    if allowed is None:
+        return True
+    return folder_id in allowed
+
+
+# --- Helper to serialize a note ---
+
+def _note_to_dict(note) -> dict:
+    return {
+        "id": note.id,
+        "title": note.title,
+        "body": note.body,
+        "created_time": note.created_time.isoformat() if note.created_time else None,
+        "updated_time": note.updated_time.isoformat() if note.updated_time else None,
+        "is_todo": note.is_todo,
+    }
+
+
+# --- MCP Tools ---
+
+
 @mcp.tool()
-async def search_notes(args: SearchNotesInput) -> Dict[str, Any]:
-    """Search for notes in Joplin.
-    
+async def search_notes(query: str, limit: int = 100) -> dict:
+    """Search for notes in Joplin using full-text search.
+
     Args:
-        args: Search parameters
-            query: Search query string
-            limit: Maximum number of results (default: 100)
-    
-    Returns:
-        Dictionary containing search results
+        query: Search query string
+        limit: Maximum number of results (default: 100)
     """
     if not api:
         return {"error": "Joplin API client not initialized"}
-    
     try:
-        results = api.search_notes(query=args.query, limit=args.limit)
-        return {
-            "status": "success",
-            "total": len(results.items),
-            "has_more": results.has_more,
-            "notes": [
-                {
-                    "id": note.id,
-                    "title": note.title,
-                    "body": note.body,
-                    "created_time": note.created_time.isoformat() if note.created_time else None,
-                    "updated_time": note.updated_time.isoformat() if note.updated_time else None,
-                    "is_todo": note.is_todo
-                }
-                for note in results.items
-            ]
-        }
+        results = api.search_notes(query=query, limit=limit)
+        notes = [_note_to_dict(n) for n in results.items if _folder_allowed(n.parent_id)]
+        return {"status": "success", "total": len(notes), "notes": notes}
     except Exception as e:
-        logger.error(f"Error searching notes: {e}")
+        logger.error("Error searching notes: %s", e)
         return {"error": str(e)}
 
+
 @mcp.tool()
-async def get_note(note_id: str) -> Dict[str, Any]:
-    """Get a specific note by ID.
-    
+async def get_note(note_id: str) -> dict:
+    """Retrieve a specific note by its ID, including the full body.
+
     Args:
         note_id: ID of the note to retrieve
-    
-    Returns:
-        Dictionary containing the note data
     """
     if not api:
         return {"error": "Joplin API client not initialized"}
-    
     try:
         note = api.get_note(note_id)
-        return {
-            "status": "success",
-            "note": {
-                "id": note.id,
-                "title": note.title,
-                "body": note.body,
-                "created_time": note.created_time.isoformat() if note.created_time else None,
-                "updated_time": note.updated_time.isoformat() if note.updated_time else None,
-                "is_todo": note.is_todo
-            }
-        }
+        return {"status": "success", "note": _note_to_dict(note)}
     except Exception as e:
-        logger.error(f"Error getting note: {e}")
+        logger.error("Error getting note: %s", e)
         return {"error": str(e)}
 
+
 @mcp.tool()
-async def create_note(args: CreateNoteInput) -> Dict[str, Any]:
+async def list_notebooks() -> dict:
+    """List all notebooks/folders available in Joplin."""
+    if not api:
+        return {"error": "Joplin API client not initialized"}
+    try:
+        folders = api.get_folders()
+        allowed = _get_allowed_folder_ids()
+        result = [
+            {"id": f.id, "title": f.title, "parent_id": f.parent_id, "note_count": f.note_count}
+            for f in folders
+            if allowed is None or f.id in allowed
+        ]
+        return {"status": "success", "total": len(result), "notebooks": result}
+    except Exception as e:
+        logger.error("Error listing notebooks: %s", e)
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def list_notes_in_notebook(notebook_id: str, limit: int = 100) -> dict:
+    """List all notes in a specific notebook/folder.
+
+    Args:
+        notebook_id: ID of the notebook/folder
+        limit: Maximum number of results (default: 100)
+    """
+    if not api:
+        return {"error": "Joplin API client not initialized"}
+    if not _folder_allowed(notebook_id):
+        return {"error": "Notebook not in allowed filter"}
+    try:
+        results = api.get_notes_in_folder(notebook_id, limit=limit)
+        notes = [_note_to_dict(n) for n in results.items]
+        return {"status": "success", "total": len(notes), "has_more": results.has_more, "notes": notes}
+    except Exception as e:
+        logger.error("Error listing notes in notebook: %s", e)
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def create_note(title: str, body: str | None = None, parent_id: str | None = None, is_todo: bool = False) -> dict:
     """Create a new note in Joplin.
-    
+
     Args:
-        args: Note creation parameters
-            title: Note title
-            body: Note content in Markdown (optional)
-            parent_id: ID of parent folder (optional)
-            is_todo: Whether this is a todo item (optional)
-    
-    Returns:
-        Dictionary containing the created note data
+        title: Note title
+        body: Note content in Markdown (optional)
+        parent_id: ID of parent folder (optional)
+        is_todo: Whether this is a todo item (default: false)
     """
     if not api:
         return {"error": "Joplin API client not initialized"}
-    
+    if parent_id and not _folder_allowed(parent_id):
+        return {"error": "Target notebook not in allowed filter"}
     try:
-        note = api.create_note(
-            title=args.title,
-            body=args.body,
-            parent_id=args.parent_id,
-            is_todo=args.is_todo
-        )
-        return {
-            "status": "success",
-            "note": {
-                "id": note.id,
-                "title": note.title,
-                "body": note.body,
-                "created_time": note.created_time.isoformat() if note.created_time else None,
-                "updated_time": note.updated_time.isoformat() if note.updated_time else None,
-                "is_todo": note.is_todo
-            }
-        }
+        note = api.create_note(title=title, body=body, parent_id=parent_id, is_todo=is_todo)
+        return {"status": "success", "note": _note_to_dict(note)}
     except Exception as e:
-        logger.error(f"Error creating note: {e}")
+        logger.error("Error creating note: %s", e)
         return {"error": str(e)}
 
+
 @mcp.tool()
-async def update_note(args: UpdateNoteInput) -> Dict[str, Any]:
+async def update_note(
+    note_id: str,
+    title: str | None = None,
+    body: str | None = None,
+    parent_id: str | None = None,
+    is_todo: bool | None = None,
+) -> dict:
     """Update an existing note in Joplin.
-    
+
     Args:
-        args: Note update parameters
-            note_id: ID of note to update
-            title: New title (optional)
-            body: New content (optional)
-            parent_id: New parent folder ID (optional)
-            is_todo: New todo status (optional)
-    
-    Returns:
-        Dictionary containing the updated note data
+        note_id: ID of note to update
+        title: New title (optional)
+        body: New content in Markdown (optional)
+        parent_id: New parent folder ID (optional)
+        is_todo: New todo status (optional)
     """
     if not api:
         return {"error": "Joplin API client not initialized"}
-    
     try:
-        note = api.update_note(
-            note_id=args.note_id,
-            title=args.title,
-            body=args.body,
-            parent_id=args.parent_id,
-            is_todo=args.is_todo
-        )
-        return {
-            "status": "success",
-            "note": {
-                "id": note.id,
-                "title": note.title,
-                "body": note.body,
-                "created_time": note.created_time.isoformat() if note.created_time else None,
-                "updated_time": note.updated_time.isoformat() if note.updated_time else None,
-                "is_todo": note.is_todo
-            }
-        }
+        note = api.update_note(note_id=note_id, title=title, body=body, parent_id=parent_id, is_todo=is_todo)
+        return {"status": "success", "note": _note_to_dict(note)}
     except Exception as e:
-        logger.error(f"Error updating note: {e}")
+        logger.error("Error updating note: %s", e)
         return {"error": str(e)}
 
+
 @mcp.tool()
-async def delete_note(note_id: str, permanent: bool = False) -> Dict[str, Any]:
+async def delete_note(note_id: str, permanent: bool = False) -> dict:
     """Delete a note from Joplin.
-    
+
     Args:
         note_id: ID of note to delete
-        permanent: If True, permanently delete the note
-    
-    Returns:
-        Dictionary containing the operation status
+        permanent: If true, permanently delete instead of moving to trash
     """
     if not api:
         return {"error": "Joplin API client not initialized"}
-    
     try:
         api.delete_note(note_id, permanent=permanent)
-        return {
-            "status": "success",
-            "message": f"Note {note_id} {'permanently ' if permanent else ''}deleted"
-        }
+        return {"status": "success", "message": f"Note {note_id} {'permanently ' if permanent else ''}deleted"}
     except Exception as e:
-        logger.error(f"Error deleting note: {e}")
+        logger.error("Error deleting note: %s", e)
         return {"error": str(e)}
 
+
 @mcp.tool()
-async def import_markdown(args: ImportMarkdownInput) -> Dict[str, Any]:
-    """Import a markdown file as a new note.
-    
+async def get_tags() -> dict:
+    """List all tags in Joplin."""
+    if not api:
+        return {"error": "Joplin API client not initialized"}
+    try:
+        tags = api.get_tags()
+        return {
+            "status": "success",
+            "total": len(tags),
+            "tags": [{"id": t.id, "title": t.title} for t in tags],
+        }
+    except Exception as e:
+        logger.error("Error getting tags: %s", e)
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def get_notes_by_tag(tag_id: str, limit: int = 100) -> dict:
+    """Get all notes that have a specific tag.
+
     Args:
-        args: Import parameters
-            file_path: Path to the markdown file
-    
-    Returns:
-        Dictionary containing the created note data
+        tag_id: ID of the tag
+        limit: Maximum number of results (default: 100)
     """
     if not api:
         return {"error": "Joplin API client not initialized"}
-    
     try:
-        file_path = Path(args.file_path)
-        md_content = MarkdownContent.from_file(file_path)
-        
-        note = api.create_note(
-            title=md_content.title,
-            body=md_content.content
-        )
-        
-        return {
-            "status": "success",
-            "note": {
-                "id": note.id,
-                "title": note.title,
-                "body": note.body,
-                "created_time": note.created_time.isoformat() if note.created_time else None,
-                "updated_time": note.updated_time.isoformat() if note.updated_time else None,
-                "is_todo": note.is_todo
-            },
-            "imported_from": str(file_path)
-        }
+        results = api.get_notes_by_tag(tag_id, limit=limit)
+        notes = [_note_to_dict(n) for n in results.items if _folder_allowed(n.parent_id)]
+        return {"status": "success", "total": len(notes), "has_more": results.has_more, "notes": notes}
     except Exception as e:
-        logger.error(f"Error importing markdown: {e}")
+        logger.error("Error getting notes by tag: %s", e)
         return {"error": str(e)}
 
+
+@mcp.tool()
+async def import_markdown(file_path: str) -> dict:
+    """Import a markdown file as a new note.
+
+    Args:
+        file_path: Path to the markdown file
+    """
+    if not api:
+        return {"error": "Joplin API client not initialized"}
+    try:
+        path = Path(file_path)
+        md_content = MarkdownContent.from_file(path)
+        note = api.create_note(title=md_content.title, body=md_content.content)
+        return {"status": "success", "note": _note_to_dict(note), "imported_from": str(path)}
+    except Exception as e:
+        logger.error("Error importing markdown: %s", e)
+        return {"error": str(e)}
+
+
 if __name__ == "__main__":
-    logging.info("Starting Joplin MCP Server...")
-    mcp.run(transport='stdio')
+    logger.info("Starting Joplin MCP Server (transport=%s)", MCP_TRANSPORT)
+    mcp.run(transport=MCP_TRANSPORT)

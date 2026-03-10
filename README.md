@@ -1,153 +1,144 @@
-# 📝 Joplin MCP Server
+# Joplin MCP Server — Docker Edition
 
-A Model Context Protocol (MCP) Server for [Joplin](https://joplinapp.org/) that enables note access through the [Model Context Protocol](https://modelcontextprotocol.io). Perfect for integration with AI assistants like Claude.
+A Docker-based [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that gives Claude.ai access to a self-hosted [Joplin](https://joplinapp.org/) note collection via Streamable HTTP transport.
 
-## ✨ Features
+Fork of [dweigend/joplin-mcp-server](https://github.com/dweigend/joplin-mcp-server), extended with remote HTTP transport and Docker deployment.
 
-- 🔍 **Search Notes**: Full-text search across all notes
-- 📖 **Read Notes**: Retrieve individual notes
-- ✏️ **Edit Notes**: Create new notes and update existing ones
-- 🗑️ **Delete Notes**: Move notes to trash or delete permanently
-- 📥 **Markdown Import**: Import markdown files as notes
-- 🤖 **AI Integration**: Seamless integration with Claude and other MCP-capable AI assistants
+## Architecture
 
-## 🚀 Installation
-
-### Prerequisites
-
-- Python 3.10 or higher
-- [Joplin Desktop](https://joplinapp.org/) with Web Clipper Service enabled
-- [uv](https://github.com/astral-sh/uv) (Python package manager)
-
-```bash
-# Clone repository
-git clone https://github.com/dweigend/joplin-mcp.git
-cd joplin-mcp
-
-# Create and activate virtual environment
-uv venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install dependencies
-```bash
-uv pip install -e .
+```
+Claude.ai ──HTTPS──► Reverse Proxy (NPMPlus)
+                            │
+                            │ :8000 (internal)
+                            ▼
+                    [Container: joplin-mcp]
+                    Python FastMCP Server
+                    Streamable HTTP Transport
+                            │
+                            │ :41184 (internal Docker network)
+                            ▼
+                    [Container: joplin-cli]
+                    Joplin CLI as daemon
+                    Syncs every 5 min
+                            │
+                            ▼
+                    [Existing: joplin-server]
+                    Joplin Server (Sync Backend)
 ```
 
-## ⚙️ Configuration
+**Why two containers?** The Joplin Data API (port 41184) only exists in the Joplin CLI/Desktop client, NOT in Joplin Server (which is only the sync backend). The `joplin-cli` container runs as a daemon, syncs with Joplin Server, and exposes the Data API on the internal Docker network.
 
-### Joplin API Token
+## Available Tools
 
-1. Open Joplin Desktop
-2. Go to Tools -> Options -> Web Clipper
-3. Enable the Web Clipper Service
-4. Copy the API Token
+| Tool | Read-Only | Description |
+|------|-----------|-------------|
+| `search_notes` | yes | Full-text search across notes |
+| `get_note` | yes | Retrieve a single note with body |
+| `list_notebooks` | yes | List all notebooks/folders |
+| `list_notes_in_notebook` | yes | List notes in a specific notebook |
+| `create_note` | no | Create a new note |
+| `update_note` | no | Update an existing note |
+| `delete_note` | no (destructive) | Delete a note |
+| `get_tags` | yes | List all tags |
+| `get_notes_by_tag` | yes | Get notes by tag |
+| `import_markdown` | no | Import a markdown file as note |
 
-Create a `.env` file in the project directory:
+## Quick Start (Docker)
+
+### 1. Configure
+
 ```bash
-JOPLIN_TOKEN=your_api_token_here
+cp .env.example .env
+# Edit .env with your values:
+#   JOPLIN_SERVER_URL, JOPLIN_SERVER_USER, JOPLIN_SERVER_PASSWORD
+#   JOPLIN_TOKEN (generate with: openssl rand -hex 32)
+```
+
+### 2. Network Setup
+
+If your Joplin Server runs in an existing Docker network, update `docker-compose.yml`:
+
+```yaml
+networks:
+  joplin-mcp-net:
+    external: true
+    name: <your-existing-docker-network>
+```
+
+Find the network name with:
+```bash
+docker network ls
+docker inspect <joplin-server-container>
+```
+
+### 3. Build & Run
+
+```bash
+docker compose build
+docker compose up -d
+```
+
+### 4. Verify
+
+```bash
+# Check container health
+docker compose ps
+
+# Test MCP endpoint
+curl -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"method":"tools/list","params":{},"id":1,"jsonrpc":"2.0"}'
+```
+
+### 5. Connect Claude.ai
+
+In Claude.ai: **Settings → Integrations → Add MCP Server**
+
+URL: `https://joplin-mcp.yourdomain.de/mcp`
+
+## Configuration
+
+All configuration is done via environment variables (see `.env.example`):
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `JOPLIN_SERVER_URL` | URL of your Joplin Server | `http://joplin-server:22300` |
+| `JOPLIN_SERVER_USER` | Joplin Server login email | — |
+| `JOPLIN_SERVER_PASSWORD` | Joplin Server login password | — |
+| `JOPLIN_TOKEN` | API token for the Data API | — |
+| `SYNC_INTERVAL` | Sync interval in seconds | `300` |
+| `MCP_PORT` | Host port for MCP server | `8000` |
+| `JOPLIN_NOTEBOOK_FILTER` | Comma-separated notebook names to restrict access | (empty = all) |
+
+## Local Development (without Docker)
+
+```bash
+# Install dependencies
+uv venv && source .venv/bin/activate
+uv pip install -e .
+
+# Run with MCP Inspector (stdio transport)
+JOPLIN_TOKEN=your_token MCP_TRANSPORT=stdio mcp dev src/mcp/joplin_mcp.py
 ```
 
 ### Claude Desktop Setup
 
-1. **Install Claude Desktop**
-   - Download [Claude Desktop](https://claude.ai/download)
-   - Ensure you have the latest version (Menu: Claude -> Check for Updates...)
+Add to your Claude Desktop MCP config:
 
-2. **Configure MCP Server**
-   ```json
-   {
-     "mcpServers": {
-       "joplin": {
-         "command": "/PATH/TO/UV/uv",
-         "args": [
-           "--directory",
-           "/PATH/TO/YOUR/PROJECT/joplin_mcp",
-           "run",
-           "src/mcp/joplin_mcp.py"
-         ]
-       }
-     }
-   }
-   ```
-   - Replace `/PATH/TO/UV/uv` with the absolute path to your uv installation
-     - Find the path with: `which uv`
-     - Example macOS: `/Users/username/.local/bin/uv`
-     - Example Windows: `C:\Users\username\AppData\Local\Microsoft\WindowsApps\uv.exe`
-   - Replace `/PATH/TO/YOUR/PROJECT/joplin_mcp` with the absolute path to your project
-
-   **Important**: Claude Desktop needs the full path to `uv` as it cannot access shell environment variables.
-
-## 🛠️ Available Tools
-
-### search_notes
-Search for notes in Joplin.
-
-**Parameters:**
-- `query` (string): Search query
-- `limit` (int, optional): Maximum number of results (default: 100)
-
-### get_note
-Retrieve a specific note by its ID.
-
-**Parameters:**
-- `note_id` (string): ID of the note
-
-### create_note
-Create a new note.
-
-**Parameters:**
-- `title` (string): Note title
-- `body` (string, optional): Note content in Markdown
-- `parent_id` (string, optional): ID of parent folder
-- `is_todo` (boolean, optional): Whether this is a todo item
-
-### update_note
-Update an existing note.
-
-**Parameters:**
-- `note_id` (string): ID of note to update
-- `title` (string, optional): New title
-- `body` (string, optional): New content
-- `parent_id` (string, optional): New parent folder ID
-- `is_todo` (boolean, optional): New todo status
-
-### delete_note
-Delete a note.
-
-**Parameters:**
-- `note_id` (string): ID of note to delete
-- `permanent` (boolean, optional): If true, permanently delete the note
-
-### import_markdown
-Import a markdown file as a new note.
-
-**Parameters:**
-- `file_path` (string): Path to the markdown file
-
-## 🧪 Development
-
-### Debug Mode
-
-To start the server in debug mode:
-
-```bash
-MCP_LOG_LEVEL=debug mcp dev src/mcp/joplin_mcp.py
+```json
+{
+  "mcpServers": {
+    "joplin": {
+      "command": "uv",
+      "args": [
+        "--directory", "/path/to/joplin-mcp-server",
+        "run", "src/mcp/joplin_mcp.py"
+      ]
+    }
+  }
+}
 ```
 
-This starts the MCP Inspector at http://localhost:5173 where you can test the tools.
+## License
 
-## 📄 License
-
-[MIT License](LICENSE) - Copyright (c) 2025 David Weigend
-
-## 👤 Author
-
-**David Weigend**
-
-* Website: [weigend.studio](https://weigend.studio)
-* GitHub: [@dweigend](https://github.com/dweigend)
-
-## 🤝 Contributing
-
-Contributions, issues and feature requests are welcome!
-Visit the [issues page](https://github.com/dweigend/joplin-mcp/issues).
+[MIT License](LICENSE) — Original work by [David Weigend](https://github.com/dweigend)

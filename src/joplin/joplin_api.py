@@ -31,6 +31,42 @@ class PaginatedResponse(Generic[T]):
     has_more: bool
 
 @dataclass
+class JoplinFolder:
+    """Represents a Joplin folder/notebook.
+
+    Reference: https://joplinapp.org/help/api/references/rest_api/#folders
+    """
+    id: str
+    title: str
+    parent_id: str | None = None
+    note_count: int = 0
+
+    @classmethod
+    def from_api_response(cls, data: dict[str, Any]) -> "JoplinFolder":
+        return cls(
+            id=data["id"],
+            title=data["title"],
+            parent_id=data.get("parent_id") or None,
+            note_count=data.get("note_count", 0),
+        )
+
+@dataclass
+class JoplinTag:
+    """Represents a Joplin tag.
+
+    Reference: https://joplinapp.org/help/api/references/rest_api/#tags
+    """
+    id: str
+    title: str
+
+    @classmethod
+    def from_api_response(cls, data: dict[str, Any]) -> "JoplinTag":
+        return cls(
+            id=data["id"],
+            title=data["title"],
+        )
+
+@dataclass
 class JoplinNote:
     """Represents a Joplin note with its attributes.
 
@@ -391,6 +427,92 @@ class JoplinAPI:
             "limit": limit
         }
         response = self._make_request("GET", "search", params=params)
+        return PaginatedResponse(
+            items=[JoplinNote.from_api_response(item) for item in response["items"]],
+            has_more=response["has_more"]
+        )
+
+    def get_folders(self) -> list[JoplinFolder]:
+        """Get all folders/notebooks.
+
+        Returns:
+            List of JoplinFolder objects
+        """
+        folders: list[JoplinFolder] = []
+        page = 1
+        while True:
+            response = self._make_request("GET", "folders", params={"page": page, "limit": 100})
+            folders.extend(JoplinFolder.from_api_response(item) for item in response["items"])
+            if not response.get("has_more", False):
+                break
+            page += 1
+        return folders
+
+    def get_notes_in_folder(
+        self,
+        folder_id: str,
+        page: int = 1,
+        limit: int = 100,
+    ) -> PaginatedResponse[JoplinNote]:
+        """Get notes in a specific folder.
+
+        Args:
+            folder_id: ID of the folder
+            page: Page number for pagination
+            limit: Maximum number of items per page
+
+        Returns:
+            PaginatedResponse containing JoplinNote objects
+        """
+        params = {
+            "page": page,
+            "limit": limit,
+            "fields": "id,title,body,created_time,updated_time,is_todo",
+        }
+        response = self._make_request("GET", f"folders/{folder_id}/notes", params=params)
+        return PaginatedResponse(
+            items=[JoplinNote.from_api_response(item) for item in response["items"]],
+            has_more=response["has_more"]
+        )
+
+    def get_tags(self) -> list[JoplinTag]:
+        """Get all tags.
+
+        Returns:
+            List of JoplinTag objects
+        """
+        tags: list[JoplinTag] = []
+        page = 1
+        while True:
+            response = self._make_request("GET", "tags", params={"page": page, "limit": 100})
+            tags.extend(JoplinTag.from_api_response(item) for item in response["items"])
+            if not response.get("has_more", False):
+                break
+            page += 1
+        return tags
+
+    def get_notes_by_tag(
+        self,
+        tag_id: str,
+        page: int = 1,
+        limit: int = 100,
+    ) -> PaginatedResponse[JoplinNote]:
+        """Get notes with a specific tag.
+
+        Args:
+            tag_id: ID of the tag
+            page: Page number for pagination
+            limit: Maximum number of items per page
+
+        Returns:
+            PaginatedResponse containing JoplinNote objects
+        """
+        params = {
+            "page": page,
+            "limit": limit,
+            "fields": "id,title,body,created_time,updated_time,is_todo",
+        }
+        response = self._make_request("GET", f"tags/{tag_id}/notes", params=params)
         return PaginatedResponse(
             items=[JoplinNote.from_api_response(item) for item in response["items"]],
             has_more=response["has_more"]
