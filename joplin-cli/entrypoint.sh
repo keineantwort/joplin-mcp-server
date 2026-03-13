@@ -18,14 +18,6 @@ joplin config api.port 41184
 echo "Running initial sync..."
 joplin sync || echo "Initial sync failed (may succeed on retry)"
 
-# E2EE: decrypt notes if encryption is enabled on the server
-if [ -n "${JOPLIN_E2EE_PASSWORD}" ]; then
-    echo "Configuring E2EE decryption..."
-    joplin e2ee decrypt --password "${JOPLIN_E2EE_PASSWORD}"
-    echo "Running post-E2EE sync..."
-    joplin sync || echo "Post-E2EE sync failed (may succeed on retry)"
-fi
-
 # Start the API server in the background
 echo "Starting Joplin API server on port 41184..."
 joplin server start &
@@ -39,6 +31,12 @@ for i in $(seq 1 30); do
     fi
     sleep 2
 done
+
+# E2EE: decrypt notes in the background (non-blocking, API is already up)
+if [ -n "${JOPLIN_E2EE_PASSWORD}" ]; then
+    echo "Starting E2EE decryption in background..."
+    joplin e2ee decrypt --password "${JOPLIN_E2EE_PASSWORD}" &
+fi
 
 # Periodic sync loop
 SYNC_INTERVAL="${SYNC_INTERVAL:-300}"
