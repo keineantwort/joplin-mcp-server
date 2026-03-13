@@ -539,14 +539,17 @@ async def run_sse_with_auth() -> None:
                 mcp._mcp_server.create_initialization_options(),
             )
 
-    async def handle_messages(request):
+    async def handle_messages(scope, receive, send):
+        request = Request(scope, receive, send)
         if not _check_bearer(request):
-            return JSONResponse(
+            response = JSONResponse(
                 {"error": "Unauthorized"},
                 status_code=401,
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        return await sse.handle_post_message(request.scope, request.receive, request._send)
+            await response(scope, receive, send)
+            return
+        await sse.handle_post_message(scope, receive, send)
 
     starlette_app = Starlette(
         debug=False,
