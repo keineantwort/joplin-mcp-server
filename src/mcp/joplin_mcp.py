@@ -299,22 +299,237 @@ async def import_markdown(file_path: str) -> dict:
 
 
 async def run_sse_with_auth() -> None:
-    """Run SSE transport with optional Bearer token authentication."""
+    """Run SSE transport with OAuth 2.1 and Bearer token authentication."""
+    import hashlib
+    import secrets
+    import time
+    import urllib.parse
+
     import uvicorn
     from starlette.applications import Starlette
     from starlette.routing import Mount, Route
-    from starlette.responses import JSONResponse
+    from starlette.responses import JSONResponse, HTMLResponse, RedirectResponse
+    from starlette.requests import Request
     from mcp.server.sse import SseServerTransport
 
     auth_token = os.environ.get("MCP_AUTH_TOKEN", "")
+    oauth_client_id = os.environ.get("OAUTH_CLIENT_ID", "")
+    oauth_client_secret = os.environ.get("OAUTH_CLIENT_SECRET", "")
+    oauth_issuer_url = os.environ.get("OAUTH_ISSUER_URL", "").rstrip("/")
+
+    # In-memory stores for OAuth state
+    # auth_codes: {code: {client_id, redirect_uri, code_challenge, expires_at, used}}
+    auth_codes: dict[str, dict] = {}
+    # access_tokens: {token: {client_id, expires_at}}
+    access_tokens: dict[str, dict] = {}
+
+    ALLOWED_REDIRECT_URIS = {
+        "https://claude.ai/api/mcp/auth_callback",
+    }
+    AUTH_CODE_TTL = 60  # seconds
+    ACCESS_TOKEN_TTL = 3600  # 1 hour
+    REFRESH_TOKEN_TTL = 86400 * 30  # 30 days
+    # refresh_tokens: {token: {client_id, expires_at}}
+    refresh_tokens: dict[str, dict] = {}
+
+    def _cleanup_expired():
+        """Remove expired auth codes and tokens."""
+        now = time.time()
+        for store in (auth_codes, access_tokens, refresh_tokens):
+            expired = [k for k, v in store.items() if v.get("expires_at", 0) < now]
+            for k in expired:
+                del store[k]
+
+    def _verify_pkce(code_verifier: str, code_challenge: str) -> bool:
+        """Verify PKCE S256 code challenge."""
+        digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
+        import base64
+        computed = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+        return secrets.compare_digest(computed, code_challenge)
+
+    def _check_bearer(request: Request) -> bool:
+        """Check if request has a valid Bearer token (OAuth or static)."""
+        auth_header = request.headers.get("authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return False
+        token = auth_header[7:]
+        # Check OAuth access tokens
+        if token in access_tokens:
+            info = access_tokens[token]
+            if info["expires_at"] > time.time():
+                return True
+            del access_tokens[token]
+            return False
+        # Fall back to static MCP_AUTH_TOKEN
+        if auth_token and secrets.compare_digest(token, auth_token):
+            return True
+        return False
 
     sse = SseServerTransport("/messages/")
 
+    # --- OAuth Endpoints ---
+
+    async def oauth_metadata(request: Request):
+        """RFC 8414 — OAuth Authorization Server Metadata."""
+        base = oauth_issuer_url or str(request.base_url).rstrip("/")
+        return JSONResponse({
+            "issuer": base,
+            "authorization_endpoint": f"{base}/oauth/authorize",
+            "token_endpoint": f"{base}/oauth/token",
+            "registration_endpoint": f"{base}/oauth/register",
+            "response_types_supported": ["code"],
+            "grant_types_supported": ["authorization_code", "refresh_token"],
+            "code_challenge_methods_supported": ["S256"],
+            "token_endpoint_auth_methods_supported": ["client_secret_post"],
+        })
+
+    async def oauth_authorize(request: Request):
+        """Authorization endpoint — shows approve page or auto-approves."""
+        _cleanup_expired()
+        params = request.query_params
+        client_id = params.get("client_id", "")
+        redirect_uri = params.get("redirect_uri", "")
+        response_type = params.get("response_type", "")
+        code_challenge = params.get("code_challenge", "")
+        code_challenge_method = params.get("code_challenge_method", "")
+        state = params.get("state", "")
+
+        # Validate
+        if response_type != "code":
+            return JSONResponse({"error": "unsupported_response_type"}, status_code=400)
+        if oauth_client_id and not secrets.compare_digest(client_id, oauth_client_id):
+            return JSONResponse({"error": "invalid_client"}, status_code=400)
+        if redirect_uri not in ALLOWED_REDIRECT_URIS:
+            return JSONResponse({"error": "invalid_redirect_uri"}, status_code=400)
+        if code_challenge_method != "S256":
+            return JSONResponse({"error": "invalid_code_challenge_method", "detail": "S256 required"}, status_code=400)
+        if not code_challenge:
+            return JSONResponse({"error": "missing_code_challenge"}, status_code=400)
+
+        # Auto-approve: generate auth code and redirect immediately
+        code = secrets.token_urlsafe(48)
+        auth_codes[code] = {
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "code_challenge": code_challenge,
+            "expires_at": time.time() + AUTH_CODE_TTL,
+            "used": False,
+        }
+
+        redirect_params = {"code": code}
+        if state:
+            redirect_params["state"] = state
+        redirect_url = f"{redirect_uri}?{urllib.parse.urlencode(redirect_params)}"
+        logger.info("OAuth authorize: issued auth code for client_id=%s", client_id)
+        return RedirectResponse(url=redirect_url, status_code=302)
+
+    async def oauth_token(request: Request):
+        """Token endpoint — exchanges auth code or refresh token for access token."""
+        _cleanup_expired()
+        form = await request.form()
+        grant_type = form.get("grant_type", "")
+        client_id = form.get("client_id", "")
+        client_secret = form.get("client_secret", "")
+
+        # Validate client credentials
+        if oauth_client_id and not secrets.compare_digest(client_id, oauth_client_id):
+            return JSONResponse({"error": "invalid_client"}, status_code=401)
+        if oauth_client_secret and not secrets.compare_digest(client_secret, oauth_client_secret):
+            return JSONResponse({"error": "invalid_client"}, status_code=401)
+
+        if grant_type == "authorization_code":
+            code = form.get("code", "")
+            code_verifier = form.get("code_verifier", "")
+            redirect_uri = form.get("redirect_uri", "")
+
+            if code not in auth_codes:
+                return JSONResponse({"error": "invalid_grant", "error_description": "Unknown or expired code"}, status_code=400)
+
+            code_info = auth_codes[code]
+            if code_info["used"]:
+                del auth_codes[code]
+                return JSONResponse({"error": "invalid_grant", "error_description": "Code already used"}, status_code=400)
+            if code_info["expires_at"] < time.time():
+                del auth_codes[code]
+                return JSONResponse({"error": "invalid_grant", "error_description": "Code expired"}, status_code=400)
+            if redirect_uri and code_info["redirect_uri"] != redirect_uri:
+                return JSONResponse({"error": "invalid_grant", "error_description": "redirect_uri mismatch"}, status_code=400)
+
+            # PKCE verification
+            if not code_verifier:
+                return JSONResponse({"error": "invalid_request", "error_description": "code_verifier required"}, status_code=400)
+            if not _verify_pkce(code_verifier, code_info["code_challenge"]):
+                return JSONResponse({"error": "invalid_grant", "error_description": "PKCE verification failed"}, status_code=400)
+
+            # Mark code as used
+            code_info["used"] = True
+
+            # Issue tokens
+            access_token = secrets.token_urlsafe(48)
+            refresh_token = secrets.token_urlsafe(48)
+            access_tokens[access_token] = {
+                "client_id": client_id,
+                "expires_at": time.time() + ACCESS_TOKEN_TTL,
+            }
+            refresh_tokens[refresh_token] = {
+                "client_id": client_id,
+                "expires_at": time.time() + REFRESH_TOKEN_TTL,
+            }
+            logger.info("OAuth token: issued access_token for client_id=%s", client_id)
+            return JSONResponse({
+                "access_token": access_token,
+                "token_type": "Bearer",
+                "expires_in": ACCESS_TOKEN_TTL,
+                "refresh_token": refresh_token,
+            })
+
+        elif grant_type == "refresh_token":
+            rt = form.get("refresh_token", "")
+            if rt not in refresh_tokens:
+                return JSONResponse({"error": "invalid_grant", "error_description": "Unknown or expired refresh token"}, status_code=400)
+            rt_info = refresh_tokens[rt]
+            if rt_info["expires_at"] < time.time():
+                del refresh_tokens[rt]
+                return JSONResponse({"error": "invalid_grant", "error_description": "Refresh token expired"}, status_code=400)
+
+            # Rotate: delete old refresh token, issue new tokens
+            del refresh_tokens[rt]
+            access_token = secrets.token_urlsafe(48)
+            new_refresh_token = secrets.token_urlsafe(48)
+            access_tokens[access_token] = {
+                "client_id": client_id,
+                "expires_at": time.time() + ACCESS_TOKEN_TTL,
+            }
+            refresh_tokens[new_refresh_token] = {
+                "client_id": client_id,
+                "expires_at": time.time() + REFRESH_TOKEN_TTL,
+            }
+            logger.info("OAuth token: refreshed access_token for client_id=%s", client_id)
+            return JSONResponse({
+                "access_token": access_token,
+                "token_type": "Bearer",
+                "expires_in": ACCESS_TOKEN_TTL,
+                "refresh_token": new_refresh_token,
+            })
+
+        return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
+
+    async def oauth_register(request: Request):
+        """Dynamic Client Registration — not supported, return 501."""
+        return JSONResponse(
+            {"error": "registration_not_supported", "error_description": "Use pre-configured client_id and client_secret"},
+            status_code=501,
+        )
+
+    # --- MCP SSE Endpoints ---
+
     async def handle_sse(request):
-        if auth_token:
-            auth_header = request.headers.get("authorization", "")
-            if auth_header != f"Bearer {auth_token}":
-                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        if not _check_bearer(request):
+            return JSONResponse(
+                {"error": "Unauthorized"},
+                status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
+            )
         async with sse.connect_sse(
             request.scope, request.receive, request._send
         ) as streams:
@@ -325,15 +540,21 @@ async def run_sse_with_auth() -> None:
             )
 
     async def handle_messages(request):
-        if auth_token:
-            auth_header = request.headers.get("authorization", "")
-            if auth_header != f"Bearer {auth_token}":
-                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        if not _check_bearer(request):
+            return JSONResponse(
+                {"error": "Unauthorized"},
+                status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
+            )
         return await sse.handle_post_message(request.scope, request.receive, request._send)
 
     starlette_app = Starlette(
         debug=False,
         routes=[
+            Route("/.well-known/oauth-authorization-server", endpoint=oauth_metadata),
+            Route("/oauth/authorize", endpoint=oauth_authorize),
+            Route("/oauth/token", endpoint=oauth_token, methods=["POST"]),
+            Route("/oauth/register", endpoint=oauth_register, methods=["POST"]),
             Route("/sse", endpoint=handle_sse),
             Mount("/messages/", app=handle_messages),
         ],
