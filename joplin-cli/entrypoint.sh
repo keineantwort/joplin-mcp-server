@@ -14,16 +14,17 @@ joplin config sync.9.password "${JOPLIN_SERVER_PASSWORD}"
 joplin config api.token "${JOPLIN_TOKEN}"
 joplin config api.port 41184
 
-# Optional: E2EE configuration
-# Uncomment and set JOPLIN_E2EE_PASSWORD if E2EE is enabled
-# if [ -n "${JOPLIN_E2EE_PASSWORD}" ]; then
-#     echo "Configuring E2EE..."
-#     joplin e2ee enable --password "${JOPLIN_E2EE_PASSWORD}"
-# fi
-
-# Initial sync before starting the API server
+# Initial sync before starting the API server (needed before E2EE setup)
 echo "Running initial sync..."
 joplin sync || echo "Initial sync failed (may succeed on retry)"
+
+# E2EE: decrypt notes if encryption is enabled on the server
+if [ -n "${JOPLIN_E2EE_PASSWORD}" ]; then
+    echo "Configuring E2EE decryption..."
+    joplin e2ee decrypt --password "${JOPLIN_E2EE_PASSWORD}"
+    echo "Running post-E2EE sync..."
+    joplin sync || echo "Post-E2EE sync failed (may succeed on retry)"
+fi
 
 # Start the API server in the background
 echo "Starting Joplin API server on port 41184..."
