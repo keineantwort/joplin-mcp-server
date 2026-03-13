@@ -298,6 +298,56 @@ async def import_markdown(file_path: str) -> dict:
         return {"error": str(e)}
 
 
+async def run_sse_with_auth() -> None:
+    """Run SSE transport with optional Bearer token authentication."""
+    import uvicorn
+    from starlette.applications import Starlette
+    from starlette.routing import Mount, Route
+    from starlette.responses import JSONResponse
+    from mcp.server.sse import SseServerTransport
+
+    auth_token = os.environ.get("MCP_AUTH_TOKEN", "")
+
+    sse = SseServerTransport("/messages/")
+
+    async def handle_sse(request):
+        if auth_token:
+            auth_header = request.headers.get("authorization", "")
+            if auth_header != f"Bearer {auth_token}":
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        async with sse.connect_sse(
+            request.scope, request.receive, request._send
+        ) as streams:
+            await mcp._mcp_server.run(
+                streams[0],
+                streams[1],
+                mcp._mcp_server.create_initialization_options(),
+            )
+
+    async def handle_messages(request):
+        if auth_token:
+            auth_header = request.headers.get("authorization", "")
+            if auth_header != f"Bearer {auth_token}":
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        return await sse.handle_post_message(request.scope, request.receive, request._send)
+
+    starlette_app = Starlette(
+        debug=False,
+        routes=[
+            Route("/sse", endpoint=handle_sse),
+            Mount("/messages/", app=handle_messages),
+        ],
+    )
+
+    config = uvicorn.Config(starlette_app, host="0.0.0.0", port=8000, log_level="info")
+    server = uvicorn.Server(config)
+    await server.serve()
+
+
 if __name__ == "__main__":
     logger.info("Starting Joplin MCP Server (transport=%s)", MCP_TRANSPORT)
-    mcp.run(transport=MCP_TRANSPORT)
+    if MCP_TRANSPORT == "sse":
+        import anyio
+        anyio.run(run_sse_with_auth)
+    else:
+        mcp.run(transport=MCP_TRANSPORT)
