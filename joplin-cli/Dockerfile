@@ -1,6 +1,6 @@
 FROM node:20-alpine
 
-RUN apk add --no-cache curl sqlite && \
+RUN apk add --no-cache curl sqlite socat && \
     npm install -g joplin
 
 # Joplin stores its data in ~/.config/joplin
