@@ -4,6 +4,7 @@ Supports both stdio (local/Claude Desktop) and streamable-http (remote/Claude.ai
 Configurable via environment variables.
 """
 
+import asyncio
 import logging
 import os
 import sys
@@ -29,6 +30,8 @@ JOPLIN_HOST = os.environ.get("JOPLIN_HOST", "localhost")
 JOPLIN_PORT = os.environ.get("JOPLIN_PORT", "41184")
 JOPLIN_BASE_URL = f"http://{JOPLIN_HOST}:{JOPLIN_PORT}"
 MCP_TRANSPORT = os.environ.get("MCP_TRANSPORT", "stdio")
+JOPLIN_SYNC_PORT = int(os.environ.get("JOPLIN_SYNC_PORT", "41186"))
+JOPLIN_SYNC_PORT_BLOCKING = int(os.environ.get("JOPLIN_SYNC_PORT_BLOCKING", "41187"))
 NOTEBOOK_FILTER = [
     n.strip()
     for n in os.environ.get("JOPLIN_NOTEBOOK_FILTER", "").split(",")
@@ -97,7 +100,38 @@ def _note_to_dict(note) -> dict:
     }
 
 
+def _trigger_sync_background() -> None:
+    """Trigger a Joplin sync in the background after write operations."""
+    if api:
+        try:
+            loop = asyncio.get_running_loop()
+            loop.run_in_executor(None, api.trigger_sync, JOPLIN_SYNC_PORT)
+        except Exception as e:
+            logger.debug("Could not trigger sync: %s", e)
+
+
 # --- MCP Tools ---
+
+
+@mcp.tool()
+async def sync_notes() -> dict:
+    """Synchronize notes with the Joplin Server.
+
+    Triggers a full sync and waits for it to complete. Use this when you
+    need up-to-date data, e.g. after the user has manually edited notes
+    on another device.
+    """
+    if not api:
+        return {"error": "Joplin API client not initialized"}
+    try:
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None, api.sync_and_wait, JOPLIN_SYNC_PORT_BLOCKING
+        )
+        return result
+    except Exception as e:
+        logger.error("Error syncing notes: %s", e)
+        return {"error": str(e)}
 
 
 @mcp.tool()
@@ -192,6 +226,7 @@ async def create_note(title: str, body: str | None = None, parent_id: str | None
         return {"error": "Target notebook not in allowed filter"}
     try:
         note = api.create_note(title=title, body=body, parent_id=parent_id, is_todo=is_todo)
+        _trigger_sync_background()
         return {"status": "success", "note": _note_to_dict(note)}
     except Exception as e:
         logger.error("Error creating note: %s", e)
@@ -219,6 +254,7 @@ async def update_note(
         return {"error": "Joplin API client not initialized"}
     try:
         note = api.update_note(note_id=note_id, title=title, body=body, parent_id=parent_id, is_todo=is_todo)
+        _trigger_sync_background()
         return {"status": "success", "note": _note_to_dict(note)}
     except Exception as e:
         logger.error("Error updating note: %s", e)
@@ -237,6 +273,7 @@ async def delete_note(note_id: str, permanent: bool = False) -> dict:
         return {"error": "Joplin API client not initialized"}
     try:
         api.delete_note(note_id, permanent=permanent)
+        _trigger_sync_background()
         return {"status": "success", "message": f"Note {note_id} {'permanently ' if permanent else ''}deleted"}
     except Exception as e:
         logger.error("Error deleting note: %s", e)
@@ -292,6 +329,7 @@ async def import_markdown(file_path: str) -> dict:
         path = Path(file_path)
         md_content = MarkdownContent.from_file(path)
         note = api.create_note(title=md_content.title, body=md_content.content)
+        _trigger_sync_background()
         return {"status": "success", "note": _note_to_dict(note), "imported_from": str(path)}
     except Exception as e:
         logger.error("Error importing markdown: %s", e)

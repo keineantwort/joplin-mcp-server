@@ -505,6 +505,36 @@ class JoplinAPI:
             page += 1
         return tags
 
+    def trigger_sync(self, sync_port: int = 41186) -> None:
+        """Trigger an immediate sync on the Joplin CLI daemon.
+
+        Fire-and-forget — sync failures are logged but not raised.
+        """
+        from urllib.parse import urlparse
+        parsed = urlparse(self.base_url)
+        sync_url = f"http://{parsed.hostname}:{sync_port}/sync"
+        try:
+            requests.post(sync_url, timeout=5)
+            logger.info("Sync triggered successfully")
+        except Exception as e:
+            logger.warning("Failed to trigger sync: %s", e)
+
+    def sync_and_wait(self, sync_port: int = 41187) -> dict[str, Any]:
+        """Trigger a sync and wait for it to complete.
+
+        Returns:
+            Dict with sync result, e.g. {"status": "success"} or {"status": "error", ...}
+        """
+        from urllib.parse import urlparse
+        parsed = urlparse(self.base_url)
+        sync_url = f"http://{parsed.hostname}:{sync_port}/sync"
+        try:
+            response = requests.post(sync_url, timeout=120)
+            return response.json()
+        except Exception as e:
+            logger.error("Blocking sync failed: %s", e)
+            return {"status": "error", "message": str(e)}
+
     def get_notes_by_tag(
         self,
         tag_id: str,

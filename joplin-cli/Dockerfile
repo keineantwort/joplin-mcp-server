@@ -9,7 +9,7 @@ RUN mkdir -p /root/.config/joplin
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-EXPOSE 41184
+EXPOSE 41184 41186 41187
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=300s --retries=3 \
     CMD curl -sf http://localhost:41184/ping || exit 1

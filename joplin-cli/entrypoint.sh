@@ -53,6 +53,53 @@ done
 echo "Starting socat proxy 0.0.0.0:41184 -> 127.0.0.1:41185..."
 socat TCP-LISTEN:41184,fork,reuseaddr,bind=0.0.0.0 TCP:127.0.0.1:41185 &
 
+# --- Sync trigger endpoints ---
+# Port 41186: async (fire-and-forget) — used after write operations
+# Port 41187: blocking — waits for sync to complete, used by sync_notes tool
+
+cat > /sync-async.sh <<'SYNCASYNC'
+#!/bin/sh
+while IFS= read -r line; do
+    line="${line%%$(printf '\r')}"
+    [ -z "$line" ] && break
+done
+if [ ! -f /tmp/sync.lock ]; then
+    (
+        touch /tmp/sync.lock
+        joplin sync >/dev/null 2>&1
+        rm -f /tmp/sync.lock
+    ) &
+fi
+printf 'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 3\r\n\r\nok\n'
+SYNCASYNC
+chmod +x /sync-async.sh
+
+cat > /sync-blocking.sh <<'SYNCBLOCKING'
+#!/bin/sh
+while IFS= read -r line; do
+    line="${line%%$(printf '\r')}"
+    [ -z "$line" ] && break
+done
+# Wait if another sync is already running
+while [ -f /tmp/sync.lock ]; do
+    sleep 1
+done
+touch /tmp/sync.lock
+if joplin sync 2>&1; then
+    MSG='{"status":"success"}'
+else
+    MSG='{"status":"error","message":"sync failed"}'
+fi
+rm -f /tmp/sync.lock
+LEN=$(printf '%s' "$MSG" | wc -c)
+printf 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s' "$LEN" "$MSG"
+SYNCBLOCKING
+chmod +x /sync-blocking.sh
+
+echo "Starting sync trigger endpoints (async=41186, blocking=41187)..."
+socat TCP-LISTEN:41186,fork,reuseaddr EXEC:/sync-async.sh &
+socat TCP-LISTEN:41187,fork,reuseaddr EXEC:/sync-blocking.sh &
+
 # Periodic sync loop (also re-decrypts if new encrypted items arrive)
 SYNC_INTERVAL="${SYNC_INTERVAL:-300}"
 echo "Starting sync loop (interval: ${SYNC_INTERVAL}s)"
