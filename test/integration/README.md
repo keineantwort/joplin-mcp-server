@@ -4,22 +4,38 @@ Tests against a real Joplin Server instance using a temporary local Joplin CLI.
 
 ## Setup
 
-```bash
-# Start a temporary Joplin CLI with Data API (interactive prompts):
-./setup_local_cli.sh
+### 1. Configure credentials
 
-# Or non-interactive:
-JOPLIN_SERVER_URL=http://host:22300 \
-JOPLIN_SERVER_USER=you@example.com \
-JOPLIN_SERVER_PASSWORD=secret \
-  ./setup_local_cli.sh
+```bash
+cp .env.example .env
+# Edit .env with your Joplin Server credentials
 ```
+
+See [.env.example](.env.example) for all available options, including:
+
+| Variable | Required | Description |
+| -------- | -------- | ----------- |
+| `JOPLIN_SERVER_URL` | yes | Joplin Server URL (e.g. `http://host:22300`) |
+| `JOPLIN_SERVER_USER` | yes | Account email |
+| `JOPLIN_SERVER_PASSWORD` | yes | Account password |
+| `JOPLIN_ENCRYPTION_PASSWORD` | no | E2EE master key password — if set, encrypted notes are decrypted after sync |
+| `JOPLIN_PORT` | no | Data API port (default: `41184`) |
+| `JOPLIN_TOKEN` | no | Fixed API token (default: random) |
+
+### 2. Start the local API
+
+```bash
+./setup_local_cli.sh
+```
+
+Without a `.env` file the script prompts interactively for credentials.
 
 This will:
 1. Install Joplin CLI into `.local-cli/` (auto-removed on exit)
 2. Sync with your Joplin Server
-3. Start the Data API on port 41184
-4. Print the `JOPLIN_TOKEN` to use with the test scripts
+3. Decrypt E2EE data (if `JOPLIN_ENCRYPTION_PASSWORD` is set)
+4. Start the Data API on `localhost:$JOPLIN_PORT`
+5. Print connection details (`JOPLIN_TOKEN`, port)
 
 Press `Ctrl-C` to stop and clean up.
 
