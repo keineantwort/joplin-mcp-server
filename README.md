@@ -2,7 +2,7 @@
 
 A Docker-based [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that gives Claude.ai access to a self-hosted [Joplin](https://joplinapp.org/) note collection via Streamable HTTP transport.
 
-Fork of [dweigend/joplin-mcp-server](https://github.com/dweigend/joplin-mcp-server), extended with remote HTTP transport and Docker deployment.
+Fork of [dweigend/joplin-mcp-server](https://github.com/dweigend/joplin-mcp-server), extended with remote HTTP transport, OAuth 2.1, E2EE support, and Docker deployment.
 
 ## Architecture
 
@@ -14,12 +14,16 @@ Claude.ai ──HTTPS──► Reverse Proxy (NPMPlus)
                     [Container: joplin-mcp]
                     Python FastMCP Server
                     Streamable HTTP Transport
+                    OAuth 2.1 + Bearer Auth
                             │
-                            │ :41184 (internal Docker network)
+                            │ :41184 (Data API)
+                            │ :41186 (async sync trigger)
+                            │ :41187 (blocking sync trigger)
                             ▼
                     [Container: joplin-cli]
                     Joplin CLI as daemon
-                    Syncs every 5 min
+                    Syncs periodically + on write
+                    E2EE decryption
                             │
                             ▼
                     [Existing: joplin-server]
@@ -30,18 +34,21 @@ Claude.ai ──HTTPS──► Reverse Proxy (NPMPlus)
 
 ## Available Tools
 
-| Tool | Read-Only | Description |
-|------|-----------|-------------|
-| `search_notes` | yes | Full-text search across notes |
-| `get_note` | yes | Retrieve a single note with body |
-| `list_notebooks` | yes | List all notebooks/folders |
-| `list_notes_in_notebook` | yes | List notes in a specific notebook |
-| `create_note` | no | Create a new note |
-| `update_note` | no | Update an existing note |
-| `delete_note` | no (destructive) | Delete a note |
-| `get_tags` | yes | List all tags |
-| `get_notes_by_tag` | yes | Get notes by tag |
-| `import_markdown` | no | Import a markdown file as note |
+| Tool | Type | Description |
+| ---- | ---- | ----------- |
+| `sync_notes` | sync | Trigger a full sync and wait for completion |
+| `search_notes` | read | Full-text search across notes |
+| `get_note` | read | Retrieve a single note with body |
+| `list_notebooks` | read | List all notebooks/folders |
+| `list_notes_in_notebook` | read | List notes in a specific notebook |
+| `get_tags` | read | List all tags |
+| `get_notes_by_tag` | read | Get notes by tag |
+| `create_note` | write | Create a new note (triggers sync) |
+| `update_note` | write | Update an existing note (triggers sync) |
+| `delete_note` | write | Delete a note (triggers sync) |
+| `import_markdown` | write | Import a markdown file as note (triggers sync) |
+
+Write operations automatically trigger an async background sync so changes reach the Joplin Server within seconds. The `sync_notes` tool can be used to explicitly pull latest changes before reading.
 
 ## Quick Start (Docker)
 
@@ -49,9 +56,7 @@ Claude.ai ──HTTPS──► Reverse Proxy (NPMPlus)
 
 ```bash
 cp .env.example .env
-# Edit .env with your values:
-#   JOPLIN_SERVER_URL, JOPLIN_SERVER_USER, JOPLIN_SERVER_PASSWORD
-#   JOPLIN_TOKEN (generate with: openssl rand -hex 32)
+# Edit .env with your values
 ```
 
 ### 2. Network Setup
@@ -94,21 +99,28 @@ curl -X POST http://localhost:8000/mcp \
 
 In Claude.ai: **Settings → Integrations → Add MCP Server**
 
-URL: `https://joplin-mcp.yourdomain.de/mcp`
+URL: `https://your-mcp-server.example.com/sse`
+
+The OAuth 2.1 flow handles authentication automatically using the `OAUTH_CLIENT_ID` and `OAUTH_CLIENT_SECRET` from your `.env`.
 
 ## Configuration
 
 All configuration is done via environment variables (see `.env.example`):
 
 | Variable | Description | Default |
-|----------|-------------|---------|
+| -------- | ----------- | ------- |
 | `JOPLIN_SERVER_URL` | URL of your Joplin Server | `http://joplin-server:22300` |
 | `JOPLIN_SERVER_USER` | Joplin Server login email | — |
 | `JOPLIN_SERVER_PASSWORD` | Joplin Server login password | — |
 | `JOPLIN_TOKEN` | API token for the Data API | — |
-| `SYNC_INTERVAL` | Sync interval in seconds | `300` |
+| `JOPLIN_ENCRYPTION_PASSWORD` | E2EE master key password (leave empty if not using E2EE) | (empty) |
+| `SYNC_INTERVAL` | Periodic sync interval in seconds | `300` |
 | `MCP_PORT` | Host port for MCP server | `8000` |
 | `JOPLIN_NOTEBOOK_FILTER` | Comma-separated notebook names to restrict access | (empty = all) |
+| `MCP_AUTH_TOKEN` | Bearer token for direct API access | — |
+| `OAUTH_CLIENT_ID` | OAuth 2.1 client ID (for Claude.ai) | — |
+| `OAUTH_CLIENT_SECRET` | OAuth 2.1 client secret | — |
+| `OAUTH_ISSUER_URL` | Public base URL of the MCP server | — |
 
 ## Local Development (without Docker)
 
@@ -120,6 +132,8 @@ uv pip install -e .
 # Run with MCP Inspector (stdio transport)
 JOPLIN_TOKEN=your_token MCP_TRANSPORT=stdio mcp dev src/mcp/joplin_mcp.py
 ```
+
+For integration tests against a real Joplin Server, see [test/integration/README.md](test/integration/README.md).
 
 ### Claude Desktop Setup
 
