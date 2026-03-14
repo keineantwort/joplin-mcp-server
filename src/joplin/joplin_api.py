@@ -433,16 +433,30 @@ class JoplinAPI:
         )
 
     def get_folders(self) -> list[JoplinFolder]:
-        """Get all folders/notebooks.
+        """Get all folders/notebooks, including nested sub-notebooks.
+
+        The Joplin API returns folders as a hierarchical tree with sub-notebooks
+        nested under a ``children`` key.  This method flattens the tree into a
+        single list so that every folder is accessible regardless of depth.
 
         Returns:
-            List of JoplinFolder objects
+            List of JoplinFolder objects (flat, all levels)
         """
+
+        def _collect(items: list[dict[str, Any]]) -> list[JoplinFolder]:
+            result: list[JoplinFolder] = []
+            for item in items:
+                result.append(JoplinFolder.from_api_response(item))
+                children = item.get("children")
+                if children:
+                    result.extend(_collect(children))
+            return result
+
         folders: list[JoplinFolder] = []
         page = 1
         while True:
             response = self._make_request("GET", "folders", params={"page": page, "limit": 100})
-            folders.extend(JoplinFolder.from_api_response(item) for item in response["items"])
+            folders.extend(_collect(response["items"]))
             if not response.get("has_more", False):
                 break
             page += 1

@@ -16,9 +16,24 @@ joplin config sync.9.password "${JOPLIN_SERVER_PASSWORD}"
 joplin config api.token "${JOPLIN_TOKEN}"
 joplin config api.port 41185
 
+# Disable keychain (not available in container)
+joplin config keychain.supported 0
+
 # Initial sync before starting the API server (needed before E2EE setup)
 echo "Running initial sync..."
 joplin sync || echo "Initial sync failed (may succeed on retry)"
+
+# E2EE: decrypt notes BEFORE starting the API so encrypted notebooks are
+# visible immediately. The --password flag is ignored by the CLI, so we
+# pipe the password via stdin instead.
+if [ -n "${JOPLIN_ENCRYPTION_PASSWORD}" ]; then
+    echo "Decrypting E2EE data (this may take a while)..."
+    # printf is safe for passwords with special characters (unlike echo).
+    # The while loop ensures the password is available for multiple master key prompts.
+    (while true; do printf '%s\n' "${JOPLIN_ENCRYPTION_PASSWORD}"; sleep 0.1; done) \
+        | joplin e2ee decrypt --retry-failed-items 2>&1 || true
+    echo "E2EE decryption complete."
+fi
 
 # Start the API server in the background (binds to 127.0.0.1:41185)
 echo "Starting Joplin API server on internal port 41185..."
@@ -38,17 +53,15 @@ done
 echo "Starting socat proxy 0.0.0.0:41184 -> 127.0.0.1:41185..."
 socat TCP-LISTEN:41184,fork,reuseaddr,bind=0.0.0.0 TCP:127.0.0.1:41185 &
 
-# E2EE: decrypt notes in the background (non-blocking, API is already up)
-if [ -n "${JOPLIN_E2EE_PASSWORD}" ]; then
-    echo "Starting E2EE decryption in background..."
-    joplin e2ee decrypt --password "${JOPLIN_E2EE_PASSWORD}" &
-fi
-
-# Periodic sync loop
+# Periodic sync loop (also re-decrypts if new encrypted items arrive)
 SYNC_INTERVAL="${SYNC_INTERVAL:-300}"
 echo "Starting sync loop (interval: ${SYNC_INTERVAL}s)"
 while true; do
     sleep "${SYNC_INTERVAL}"
     echo "$(date): Running sync..."
     joplin sync || echo "Sync failed, will retry next interval"
+    if [ -n "${JOPLIN_ENCRYPTION_PASSWORD}" ]; then
+        (while true; do printf '%s\n' "${JOPLIN_ENCRYPTION_PASSWORD}"; sleep 0.1; done) \
+            | joplin e2ee decrypt --retry-failed-items 2>&1 || true
+    fi
 done

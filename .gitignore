@@ -49,3 +49,6 @@ Thumbs.db
 .ruff_cache/
 __pycache__/
 .pytest_cache/
+
+# Integration test working directory
+test/integration/.local-cli/
