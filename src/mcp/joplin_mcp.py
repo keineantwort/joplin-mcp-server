@@ -363,6 +363,7 @@ async def run_sse_with_auth() -> None:
 
     ALLOWED_REDIRECT_URIS = {
         "https://claude.ai/api/mcp/auth_callback",
+        "http://localhost:8080/callback",
     }
     AUTH_CODE_TTL = 60  # seconds
     ACCESS_TOKEN_TTL = 3600  # 1 hour
