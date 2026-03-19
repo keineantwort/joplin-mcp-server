@@ -48,7 +48,7 @@ AUTHENTIK_CLIENT_ID = os.environ.get("AUTHENTIK_CLIENT_ID", "")
 AUTHENTIK_CLIENT_SECRET = os.environ.get("AUTHENTIK_CLIENT_SECRET", "")
 
 # Derived Authentik endpoints
-AUTHENTIK_INTROSPECT_URL = f"{AUTHENTIK_URL}/application/o/{AUTHENTIK_SLUG}/introspect/"
+AUTHENTIK_INTROSPECT_URL = f"{AUTHENTIK_URL}/application/o/introspect/"
 AUTHENTIK_AUTHORIZE_URL = f"{AUTHENTIK_URL}/application/o/authorize/"
 AUTHENTIK_TOKEN_URL = f"{AUTHENTIK_URL}/application/o/token/"
 AUTHENTIK_ISSUER_URL = f"{AUTHENTIK_URL}/application/o/{AUTHENTIK_SLUG}/"
@@ -77,6 +77,9 @@ async def _introspect_token(token: str) -> set[str]:
             data={"token": token},
             auth=(AUTHENTIK_CLIENT_ID, AUTHENTIK_CLIENT_SECRET),
         )
+    if resp.status_code != 200 or not resp.content:
+        logger.error("Introspection failed: HTTP %s, body=%r", resp.status_code, resp.text[:200] if resp.text else "")
+        raise PermissionError("Token introspection failed")
     data = resp.json()
     if not data.get("active"):
         _token_cache.pop(token, None)
