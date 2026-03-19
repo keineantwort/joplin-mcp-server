@@ -443,6 +443,21 @@ async def run_sse_with_auth() -> None:
             "token_endpoint_auth_methods_supported": ["client_secret_post"],
         })
 
+    async def oauth_protected_resource(request: Request):
+        """RFC 9728 — OAuth Protected Resource Metadata."""
+        base = str(request.base_url).rstrip("/")
+        return JSONResponse({
+            "resource": base,
+            "authorization_servers": [AUTHENTIK_ISSUER_URL],
+            "scopes_supported": [
+                "joplin:get_note", "joplin:search_notes", "joplin:list_notebooks",
+                "joplin:list_notes", "joplin:get_tags", "joplin:get_notes_by_tag",
+                "joplin:create_note", "joplin:update_note", "joplin:delete_note",
+                "joplin:import_markdown", "joplin:sync_notes",
+            ],
+            "bearer_methods_supported": ["header"],
+        })
+
     async def oauth_register(request: Request):
         """Dynamic Client Registration — not supported."""
         return JSONResponse(
@@ -508,6 +523,7 @@ async def run_sse_with_auth() -> None:
     starlette_app = Starlette(
         debug=False,
         routes=[
+            Route("/.well-known/oauth-protected-resource", endpoint=oauth_protected_resource),
             Route("/.well-known/oauth-authorization-server", endpoint=oauth_metadata),
             Route("/oauth/register", endpoint=oauth_register, methods=["POST"]),
             Route("/sse", endpoint=handle_sse),
