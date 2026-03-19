@@ -41,6 +41,9 @@ NOTEBOOK_FILTER = [
     if n.strip()
 ]
 
+# Public URL of this MCP server (used in OAuth metadata)
+MCP_PUBLIC_URL = os.environ.get("MCP_PUBLIC_URL", "").rstrip("/")
+
 # Authentik configuration
 AUTHENTIK_URL = os.environ.get("AUTHENTIK_URL", "")
 AUTHENTIK_SLUG = os.environ.get("AUTHENTIK_SLUG", "joplin-mcp")
@@ -431,12 +434,11 @@ async def run_sse_with_auth() -> None:
 
     async def oauth_metadata(request: Request):
         """RFC 8414 — OAuth Authorization Server Metadata pointing to Authentik."""
-        base = str(request.base_url).rstrip("/")
         return JSONResponse({
             "issuer": AUTHENTIK_ISSUER_URL,
             "authorization_endpoint": AUTHENTIK_AUTHORIZE_URL,
             "token_endpoint": AUTHENTIK_TOKEN_URL,
-            "registration_endpoint": f"{base}/oauth/register",
+            "registration_endpoint": f"{MCP_PUBLIC_URL}/oauth/register",
             "response_types_supported": ["code"],
             "grant_types_supported": ["authorization_code", "refresh_token"],
             "code_challenge_methods_supported": ["S256"],
@@ -445,9 +447,8 @@ async def run_sse_with_auth() -> None:
 
     async def oauth_protected_resource(request: Request):
         """RFC 9728 — OAuth Protected Resource Metadata."""
-        base = str(request.base_url).rstrip("/")
         return JSONResponse({
-            "resource": base,
+            "resource": MCP_PUBLIC_URL,
             "authorization_servers": [AUTHENTIK_ISSUER_URL],
             "scopes_supported": [
                 "joplin:get_note", "joplin:search_notes", "joplin:list_notebooks",
@@ -459,11 +460,24 @@ async def run_sse_with_auth() -> None:
         })
 
     async def oauth_register(request: Request):
-        """Dynamic Client Registration — not supported."""
-        return JSONResponse(
-            {"error": "registration_not_supported", "error_description": "Use pre-configured client_id and client_secret"},
-            status_code=501,
-        )
+        """Dynamic Client Registration — returns pre-configured Authentik credentials.
+
+        Claude Code needs client_id/secret to start the OAuth flow.
+        Returns the Authentik provider credentials so the client can
+        proceed with the authorization code flow against Authentik.
+        """
+        return JSONResponse({
+            "client_id": AUTHENTIK_CLIENT_ID,
+            "client_secret": AUTHENTIK_CLIENT_SECRET,
+            "client_name": "Joplin MCP",
+            "redirect_uris": [
+                "https://claude.ai/api/mcp/auth_callback",
+                "http://localhost:8080/callback",
+            ],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+            "token_endpoint_auth_method": "client_secret_post",
+        }, status_code=201)
 
     # --- MCP SSE Endpoints ---
 
