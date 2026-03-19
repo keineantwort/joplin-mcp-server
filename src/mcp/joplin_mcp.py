@@ -435,7 +435,7 @@ async def run_sse_with_auth() -> None:
     async def oauth_metadata(request: Request):
         """RFC 8414 — OAuth Authorization Server Metadata pointing to Authentik."""
         return JSONResponse({
-            "issuer": AUTHENTIK_ISSUER_URL,
+            "issuer": MCP_PUBLIC_URL,
             "authorization_endpoint": f"{MCP_PUBLIC_URL}/oauth/authorize",
             "token_endpoint": f"{MCP_PUBLIC_URL}/oauth/token",
             "registration_endpoint": f"{MCP_PUBLIC_URL}/oauth/register",
@@ -449,7 +449,7 @@ async def run_sse_with_auth() -> None:
         """RFC 9728 — OAuth Protected Resource Metadata."""
         return JSONResponse({
             "resource": MCP_PUBLIC_URL,
-            "authorization_servers": [AUTHENTIK_ISSUER_URL],
+            "authorization_servers": [MCP_PUBLIC_URL],
             "scopes_supported": [
                 "joplin:get_note", "joplin:search_notes", "joplin:list_notebooks",
                 "joplin:list_notes", "joplin:get_tags", "joplin:get_notes_by_tag",
