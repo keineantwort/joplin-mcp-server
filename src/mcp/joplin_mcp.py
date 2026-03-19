@@ -436,8 +436,8 @@ async def run_sse_with_auth() -> None:
         """RFC 8414 — OAuth Authorization Server Metadata pointing to Authentik."""
         return JSONResponse({
             "issuer": AUTHENTIK_ISSUER_URL,
-            "authorization_endpoint": AUTHENTIK_AUTHORIZE_URL,
-            "token_endpoint": AUTHENTIK_TOKEN_URL,
+            "authorization_endpoint": f"{MCP_PUBLIC_URL}/oauth/authorize",
+            "token_endpoint": f"{MCP_PUBLIC_URL}/oauth/token",
             "registration_endpoint": f"{MCP_PUBLIC_URL}/oauth/register",
             "response_types_supported": ["code"],
             "grant_types_supported": ["authorization_code", "refresh_token"],
@@ -478,6 +478,25 @@ async def run_sse_with_auth() -> None:
             "response_types": ["code"],
             "token_endpoint_auth_method": "client_secret_post",
         }, status_code=201)
+
+    # --- OAuth Proxy Endpoints (forward to Authentik) ---
+
+    async def oauth_authorize(request: Request):
+        """Redirect authorization requests to Authentik."""
+        from starlette.responses import RedirectResponse
+        qs = str(request.url.query)
+        redirect_url = f"{AUTHENTIK_AUTHORIZE_URL}?{qs}" if qs else AUTHENTIK_AUTHORIZE_URL
+        return RedirectResponse(url=redirect_url, status_code=302)
+
+    async def oauth_token(request: Request):
+        """Proxy token requests to Authentik."""
+        body = await request.body()
+        headers = {
+            "content-type": request.headers.get("content-type", "application/x-www-form-urlencoded"),
+        }
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(AUTHENTIK_TOKEN_URL, content=body, headers=headers)
+        return JSONResponse(resp.json(), status_code=resp.status_code)
 
     # --- MCP SSE Endpoints ---
 
@@ -539,6 +558,8 @@ async def run_sse_with_auth() -> None:
         routes=[
             Route("/.well-known/oauth-protected-resource", endpoint=oauth_protected_resource),
             Route("/.well-known/oauth-authorization-server", endpoint=oauth_metadata),
+            Route("/oauth/authorize", endpoint=oauth_authorize),
+            Route("/oauth/token", endpoint=oauth_token, methods=["POST"]),
             Route("/oauth/register", endpoint=oauth_register, methods=["POST"]),
             Route("/sse", endpoint=handle_sse),
             Mount("/messages/", app=handle_messages),
