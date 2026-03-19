@@ -101,7 +101,17 @@ In Claude.ai: **Settings → Integrations → Add MCP Server**
 
 URL: `https://your-mcp-server.example.com/sse`
 
-The OAuth 2.1 flow handles authentication automatically using the `OAUTH_CLIENT_ID` and `OAUTH_CLIENT_SECRET` from your `.env`.
+The OAuth 2.1 flow handles authentication automatically via Authentik.
+
+### Authentik Setup
+
+1. Create an **OAuth2/OpenID Provider** in Authentik for `joplin-mcp`
+2. Add a **Scope Mapping** for `offline_access` (expression: `return {}`) — this enables refresh tokens
+3. Assign the `offline_access` scope to the provider under **Advanced protocol settings → Scopes**
+4. Set **Refresh Token validity** to a reasonable value (e.g. `days=30`)
+5. Copy Client ID and Secret to your `.env`
+
+The MCP server automatically injects `offline_access` into the authorization request so that Authentik issues a refresh token alongside the access token. Clients (Claude Code, claude.ai) use the refresh token to transparently renew expired access tokens without re-authentication.
 
 ## Configuration
 
@@ -117,10 +127,11 @@ All configuration is done via environment variables (see `.env.example`):
 | `SYNC_INTERVAL` | Periodic sync interval in seconds | `300` |
 | `MCP_PORT` | Host port for MCP server | `8000` |
 | `JOPLIN_NOTEBOOK_FILTER` | Comma-separated notebook names to restrict access | (empty = all) |
-| `MCP_AUTH_TOKEN` | Bearer token for direct API access | — |
-| `OAUTH_CLIENT_ID` | OAuth 2.1 client ID (for Claude.ai) | — |
-| `OAUTH_CLIENT_SECRET` | OAuth 2.1 client secret | — |
-| `OAUTH_ISSUER_URL` | Public base URL of the MCP server | — |
+| `MCP_PUBLIC_URL` | Public HTTPS URL of the MCP server (used in OAuth metadata) | — |
+| `AUTHENTIK_URL` | Base URL of your Authentik instance | — |
+| `AUTHENTIK_SLUG` | Application slug in Authentik | `joplin-mcp` |
+| `AUTHENTIK_CLIENT_ID` | OAuth2 Client ID from the Authentik Provider | — |
+| `AUTHENTIK_CLIENT_SECRET` | OAuth2 Client Secret from the Authentik Provider | — |
 
 ## Local Development (without Docker)
 
