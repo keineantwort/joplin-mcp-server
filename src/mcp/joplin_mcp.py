@@ -1,15 +1,18 @@
 """Joplin MCP Server implementation.
 
-Supports both stdio (local/Claude Desktop) and streamable-http (remote/Claude.ai) transport.
-Configurable via environment variables.
+Supports both stdio (local/Claude Desktop) and SSE (remote/Claude.ai) transport.
+Authentication and authorization via Authentik (OAuth 2.1 + Token Introspection).
 """
 
 import asyncio
+import contextvars
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 
+import httpx
 from mcp.server.fastmcp import FastMCP
 
 # Add the src directory to the Python path
@@ -37,6 +40,58 @@ NOTEBOOK_FILTER = [
     for n in os.environ.get("JOPLIN_NOTEBOOK_FILTER", "").split(",")
     if n.strip()
 ]
+
+# Authentik configuration
+AUTHENTIK_URL = os.environ.get("AUTHENTIK_URL", "")
+AUTHENTIK_SLUG = os.environ.get("AUTHENTIK_SLUG", "joplin-mcp")
+AUTHENTIK_CLIENT_ID = os.environ.get("AUTHENTIK_CLIENT_ID", "")
+AUTHENTIK_CLIENT_SECRET = os.environ.get("AUTHENTIK_CLIENT_SECRET", "")
+
+# Derived Authentik endpoints
+AUTHENTIK_INTROSPECT_URL = f"{AUTHENTIK_URL}/application/o/{AUTHENTIK_SLUG}/introspect/"
+AUTHENTIK_AUTHORIZE_URL = f"{AUTHENTIK_URL}/application/o/authorize/"
+AUTHENTIK_TOKEN_URL = f"{AUTHENTIK_URL}/application/o/token/"
+AUTHENTIK_ISSUER_URL = f"{AUTHENTIK_URL}/application/o/{AUTHENTIK_SLUG}/"
+
+# --- Token Introspection ---
+
+_token_cache: dict[str, tuple[set[str], float]] = {}
+INTROSPECT_CACHE_TTL = 300  # 5 minutes
+
+# Scopes for the current SSE session (set at connection time)
+_current_scopes: contextvars.ContextVar[set[str]] = contextvars.ContextVar(
+    "current_scopes", default=set()
+)
+
+
+async def _introspect_token(token: str) -> set[str]:
+    """Introspect token via Authentik. Returns granted scopes. Cached for 5 min."""
+    now = time.time()
+    cached = _token_cache.get(token)
+    if cached and cached[1] > now:
+        return cached[0]
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            AUTHENTIK_INTROSPECT_URL,
+            data={"token": token},
+            auth=(AUTHENTIK_CLIENT_ID, AUTHENTIK_CLIENT_SECRET),
+        )
+    data = resp.json()
+    if not data.get("active"):
+        _token_cache.pop(token, None)
+        raise PermissionError("Token invalid or expired")
+
+    scopes = set(data.get("scope", "").split())
+    _token_cache[token] = (scopes, now + INTROSPECT_CACHE_TTL)
+    return scopes
+
+
+def _require_scope(scope: str) -> None:
+    """Check if the current session has the required scope. Raises PermissionError."""
+    scopes = _current_scopes.get()
+    if scope not in scopes:
+        raise PermissionError(f"403 Forbidden – Scope '{scope}' not granted")
 
 # Initialize FastMCP server
 mcp = FastMCP("joplin")
@@ -121,6 +176,7 @@ async def sync_notes() -> dict:
     need up-to-date data, e.g. after the user has manually edited notes
     on another device.
     """
+    _require_scope("joplin:sync_notes")
     if not api:
         return {"error": "Joplin API client not initialized"}
     try:
@@ -142,6 +198,7 @@ async def search_notes(query: str, limit: int = 100) -> dict:
         query: Search query string
         limit: Maximum number of results (default: 100)
     """
+    _require_scope("joplin:search_notes")
     if not api:
         return {"error": "Joplin API client not initialized"}
     try:
@@ -160,6 +217,7 @@ async def get_note(note_id: str) -> dict:
     Args:
         note_id: ID of the note to retrieve
     """
+    _require_scope("joplin:get_note")
     if not api:
         return {"error": "Joplin API client not initialized"}
     try:
@@ -173,6 +231,7 @@ async def get_note(note_id: str) -> dict:
 @mcp.tool()
 async def list_notebooks() -> dict:
     """List all notebooks/folders available in Joplin."""
+    _require_scope("joplin:list_notebooks")
     if not api:
         return {"error": "Joplin API client not initialized"}
     try:
@@ -197,6 +256,7 @@ async def list_notes_in_notebook(notebook_id: str, limit: int = 100) -> dict:
         notebook_id: ID of the notebook/folder
         limit: Maximum number of results (default: 100)
     """
+    _require_scope("joplin:list_notes")
     if not api:
         return {"error": "Joplin API client not initialized"}
     if not _folder_allowed(notebook_id):
@@ -220,6 +280,7 @@ async def create_note(title: str, body: str | None = None, parent_id: str | None
         parent_id: ID of parent folder (optional)
         is_todo: Whether this is a todo item (default: false)
     """
+    _require_scope("joplin:create_note")
     if not api:
         return {"error": "Joplin API client not initialized"}
     if parent_id and not _folder_allowed(parent_id):
@@ -250,6 +311,7 @@ async def update_note(
         parent_id: New parent folder ID (optional)
         is_todo: New todo status (optional)
     """
+    _require_scope("joplin:update_note")
     if not api:
         return {"error": "Joplin API client not initialized"}
     try:
@@ -269,6 +331,7 @@ async def delete_note(note_id: str, permanent: bool = False) -> dict:
         note_id: ID of note to delete
         permanent: If true, permanently delete instead of moving to trash
     """
+    _require_scope("joplin:delete_note")
     if not api:
         return {"error": "Joplin API client not initialized"}
     try:
@@ -283,6 +346,7 @@ async def delete_note(note_id: str, permanent: bool = False) -> dict:
 @mcp.tool()
 async def get_tags() -> dict:
     """List all tags in Joplin."""
+    _require_scope("joplin:get_tags")
     if not api:
         return {"error": "Joplin API client not initialized"}
     try:
@@ -305,6 +369,7 @@ async def get_notes_by_tag(tag_id: str, limit: int = 100) -> dict:
         tag_id: ID of the tag
         limit: Maximum number of results (default: 100)
     """
+    _require_scope("joplin:get_notes_by_tag")
     if not api:
         return {"error": "Joplin API client not initialized"}
     try:
@@ -323,6 +388,7 @@ async def import_markdown(file_path: str) -> dict:
     Args:
         file_path: Path to the markdown file
     """
+    _require_scope("joplin:import_markdown")
     if not api:
         return {"error": "Joplin API client not initialized"}
     try:
@@ -337,84 +403,36 @@ async def import_markdown(file_path: str) -> dict:
 
 
 async def run_sse_with_auth() -> None:
-    """Run SSE transport with OAuth 2.1 and Bearer token authentication."""
-    import hashlib
-    import secrets
-    import time
-    import urllib.parse
+    """Run SSE transport with Authentik OAuth 2.1 authorization.
 
+    OAuth metadata points to Authentik endpoints. Token validation and
+    scope checking is done via Authentik Token Introspection.
+    """
     import uvicorn
     from starlette.applications import Starlette
     from starlette.routing import Mount, Route
-    from starlette.responses import JSONResponse, HTMLResponse, RedirectResponse
+    from starlette.responses import JSONResponse
     from starlette.requests import Request
     from mcp.server.sse import SseServerTransport
 
-    auth_token = os.environ.get("MCP_AUTH_TOKEN", "")
-    oauth_client_id = os.environ.get("OAUTH_CLIENT_ID", "")
-    oauth_client_secret = os.environ.get("OAUTH_CLIENT_SECRET", "")
-    oauth_issuer_url = os.environ.get("OAUTH_ISSUER_URL", "").rstrip("/")
-
-    # In-memory stores for OAuth state
-    # auth_codes: {code: {client_id, redirect_uri, code_challenge, expires_at, used}}
-    auth_codes: dict[str, dict] = {}
-    # access_tokens: {token: {client_id, expires_at}}
-    access_tokens: dict[str, dict] = {}
-
-    ALLOWED_REDIRECT_URIS = {
-        "https://claude.ai/api/mcp/auth_callback",
-        "http://localhost:8080/callback",
-    }
-    AUTH_CODE_TTL = 60  # seconds
-    ACCESS_TOKEN_TTL = 3600  # 1 hour
-    REFRESH_TOKEN_TTL = 86400 * 30  # 30 days
-    # refresh_tokens: {token: {client_id, expires_at}}
-    refresh_tokens: dict[str, dict] = {}
-
-    def _cleanup_expired():
-        """Remove expired auth codes and tokens."""
-        now = time.time()
-        for store in (auth_codes, access_tokens, refresh_tokens):
-            expired = [k for k, v in store.items() if v.get("expires_at", 0) < now]
-            for k in expired:
-                del store[k]
-
-    def _verify_pkce(code_verifier: str, code_challenge: str) -> bool:
-        """Verify PKCE S256 code challenge."""
-        digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
-        import base64
-        computed = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
-        return secrets.compare_digest(computed, code_challenge)
-
-    def _check_bearer(request: Request) -> bool:
-        """Check if request has a valid Bearer token (OAuth or static)."""
+    def _extract_bearer(request: Request) -> str | None:
+        """Extract Bearer token from Authorization header."""
         auth_header = request.headers.get("authorization", "")
         if not auth_header.startswith("Bearer "):
-            return False
-        token = auth_header[7:]
-        # Check OAuth access tokens
-        if token in access_tokens:
-            info = access_tokens[token]
-            if info["expires_at"] > time.time():
-                return True
-            del access_tokens[token]
-            return False
-        # Fall back to static MCP_AUTH_TOKEN
-        if auth_token and secrets.compare_digest(token, auth_token):
-            return True
-        return False
+            return None
+        return auth_header[7:]
 
     sse = SseServerTransport("/messages/")
 
-    # --- OAuth Endpoints ---
+    # --- OAuth Metadata (points to Authentik) ---
 
     async def oauth_metadata(request: Request):
-        """RFC 8414 — OAuth Authorization Server Metadata."""
-        base = oauth_issuer_url or str(request.base_url).rstrip("/")
+        """RFC 8414 — OAuth Authorization Server Metadata pointing to Authentik."""
+        base = str(request.base_url).rstrip("/")
         return JSONResponse({
-            "issuer": base,
-            "authorization_endpoint": f"{base}/oauth/authorize",
-            "token_endpoint": f"{base}/oauth/token",
+            "issuer": AUTHENTIK_ISSUER_URL,
+            "authorization_endpoint": AUTHENTIK_AUTHORIZE_URL,
+            "token_endpoint": AUTHENTIK_TOKEN_URL,
             "registration_endpoint": f"{base}/oauth/register",
             "response_types_supported": ["code"],
             "grant_types_supported": ["authorization_code", "refresh_token"],
@@ -422,139 +440,8 @@ async def run_sse_with_auth() -> None:
             "token_endpoint_auth_methods_supported": ["client_secret_post"],
         })
 
-    async def oauth_authorize(request: Request):
-        """Authorization endpoint — shows approve page or auto-approves."""
-        _cleanup_expired()
-        params = request.query_params
-        client_id = params.get("client_id", "")
-        redirect_uri = params.get("redirect_uri", "")
-        response_type = params.get("response_type", "")
-        code_challenge = params.get("code_challenge", "")
-        code_challenge_method = params.get("code_challenge_method", "")
-        state = params.get("state", "")
-
-        # Validate
-        if response_type != "code":
-            return JSONResponse({"error": "unsupported_response_type"}, status_code=400)
-        if oauth_client_id and not secrets.compare_digest(client_id, oauth_client_id):
-            return JSONResponse({"error": "invalid_client"}, status_code=400)
-        if redirect_uri not in ALLOWED_REDIRECT_URIS:
-            return JSONResponse({"error": "invalid_redirect_uri"}, status_code=400)
-        if code_challenge_method != "S256":
-            return JSONResponse({"error": "invalid_code_challenge_method", "detail": "S256 required"}, status_code=400)
-        if not code_challenge:
-            return JSONResponse({"error": "missing_code_challenge"}, status_code=400)
-
-        # Auto-approve: generate auth code and redirect immediately
-        code = secrets.token_urlsafe(48)
-        auth_codes[code] = {
-            "client_id": client_id,
-            "redirect_uri": redirect_uri,
-            "code_challenge": code_challenge,
-            "expires_at": time.time() + AUTH_CODE_TTL,
-            "used": False,
-        }
-
-        redirect_params = {"code": code}
-        if state:
-            redirect_params["state"] = state
-        redirect_url = f"{redirect_uri}?{urllib.parse.urlencode(redirect_params)}"
-        logger.info("OAuth authorize: issued auth code for client_id=%s", client_id)
-        return RedirectResponse(url=redirect_url, status_code=302)
-
-    async def oauth_token(request: Request):
-        """Token endpoint — exchanges auth code or refresh token for access token."""
-        _cleanup_expired()
-        form = await request.form()
-        grant_type = form.get("grant_type", "")
-        client_id = form.get("client_id", "")
-        client_secret = form.get("client_secret", "")
-
-        # Validate client credentials
-        if oauth_client_id and not secrets.compare_digest(client_id, oauth_client_id):
-            return JSONResponse({"error": "invalid_client"}, status_code=401)
-        if oauth_client_secret and not secrets.compare_digest(client_secret, oauth_client_secret):
-            return JSONResponse({"error": "invalid_client"}, status_code=401)
-
-        if grant_type == "authorization_code":
-            code = form.get("code", "")
-            code_verifier = form.get("code_verifier", "")
-            redirect_uri = form.get("redirect_uri", "")
-
-            if code not in auth_codes:
-                return JSONResponse({"error": "invalid_grant", "error_description": "Unknown or expired code"}, status_code=400)
-
-            code_info = auth_codes[code]
-            if code_info["used"]:
-                del auth_codes[code]
-                return JSONResponse({"error": "invalid_grant", "error_description": "Code already used"}, status_code=400)
-            if code_info["expires_at"] < time.time():
-                del auth_codes[code]
-                return JSONResponse({"error": "invalid_grant", "error_description": "Code expired"}, status_code=400)
-            if redirect_uri and code_info["redirect_uri"] != redirect_uri:
-                return JSONResponse({"error": "invalid_grant", "error_description": "redirect_uri mismatch"}, status_code=400)
-
-            # PKCE verification
-            if not code_verifier:
-                return JSONResponse({"error": "invalid_request", "error_description": "code_verifier required"}, status_code=400)
-            if not _verify_pkce(code_verifier, code_info["code_challenge"]):
-                return JSONResponse({"error": "invalid_grant", "error_description": "PKCE verification failed"}, status_code=400)
-
-            # Mark code as used
-            code_info["used"] = True
-
-            # Issue tokens
-            access_token = secrets.token_urlsafe(48)
-            refresh_token = secrets.token_urlsafe(48)
-            access_tokens[access_token] = {
-                "client_id": client_id,
-                "expires_at": time.time() + ACCESS_TOKEN_TTL,
-            }
-            refresh_tokens[refresh_token] = {
-                "client_id": client_id,
-                "expires_at": time.time() + REFRESH_TOKEN_TTL,
-            }
-            logger.info("OAuth token: issued access_token for client_id=%s", client_id)
-            return JSONResponse({
-                "access_token": access_token,
-                "token_type": "Bearer",
-                "expires_in": ACCESS_TOKEN_TTL,
-                "refresh_token": refresh_token,
-            })
-
-        elif grant_type == "refresh_token":
-            rt = form.get("refresh_token", "")
-            if rt not in refresh_tokens:
-                return JSONResponse({"error": "invalid_grant", "error_description": "Unknown or expired refresh token"}, status_code=400)
-            rt_info = refresh_tokens[rt]
-            if rt_info["expires_at"] < time.time():
-                del refresh_tokens[rt]
-                return JSONResponse({"error": "invalid_grant", "error_description": "Refresh token expired"}, status_code=400)
-
-            # Rotate: delete old refresh token, issue new tokens
-            del refresh_tokens[rt]
-            access_token = secrets.token_urlsafe(48)
-            new_refresh_token = secrets.token_urlsafe(48)
-            access_tokens[access_token] = {
-                "client_id": client_id,
-                "expires_at": time.time() + ACCESS_TOKEN_TTL,
-            }
-            refresh_tokens[new_refresh_token] = {
-                "client_id": client_id,
-                "expires_at": time.time() + REFRESH_TOKEN_TTL,
-            }
-            logger.info("OAuth token: refreshed access_token for client_id=%s", client_id)
-            return JSONResponse({
-                "access_token": access_token,
-                "token_type": "Bearer",
-                "expires_in": ACCESS_TOKEN_TTL,
-                "refresh_token": new_refresh_token,
-            })
-
-        return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
-
     async def oauth_register(request: Request):
-        """Dynamic Client Registration — not supported, return 501."""
+        """Dynamic Client Registration — not supported."""
         return JSONResponse(
             {"error": "registration_not_supported", "error_description": "Use pre-configured client_id and client_secret"},
             status_code=501,
@@ -563,12 +450,26 @@ async def run_sse_with_auth() -> None:
     # --- MCP SSE Endpoints ---
 
     async def handle_sse(request):
-        if not _check_bearer(request):
+        token = _extract_bearer(request)
+        if not token:
             return JSONResponse(
                 {"error": "Unauthorized"},
                 status_code=401,
                 headers={"WWW-Authenticate": "Bearer"},
             )
+        try:
+            scopes = await _introspect_token(token)
+        except PermissionError:
+            return JSONResponse(
+                {"error": "Unauthorized – token invalid or expired"},
+                status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        # Store scopes in contextvar so tool handlers can check them
+        _current_scopes.set(scopes)
+        logger.info("SSE connected, granted scopes: %s", scopes)
+
         async with sse.connect_sse(
             request.scope, request.receive, request._send
         ) as streams:
@@ -580,9 +481,20 @@ async def run_sse_with_auth() -> None:
 
     async def handle_messages(scope, receive, send):
         request = Request(scope, receive, send)
-        if not _check_bearer(request):
+        token = _extract_bearer(request)
+        if not token:
             response = JSONResponse(
                 {"error": "Unauthorized"},
+                status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+            await response(scope, receive, send)
+            return
+        try:
+            await _introspect_token(token)  # validates (uses cache)
+        except PermissionError:
+            response = JSONResponse(
+                {"error": "Unauthorized – token invalid or expired"},
                 status_code=401,
                 headers={"WWW-Authenticate": "Bearer"},
             )
@@ -594,8 +506,6 @@ async def run_sse_with_auth() -> None:
         debug=False,
         routes=[
             Route("/.well-known/oauth-authorization-server", endpoint=oauth_metadata),
-            Route("/oauth/authorize", endpoint=oauth_authorize),
-            Route("/oauth/token", endpoint=oauth_token, methods=["POST"]),
             Route("/oauth/register", endpoint=oauth_register, methods=["POST"]),
             Route("/sse", endpoint=handle_sse),
             Mount("/messages/", app=handle_messages),

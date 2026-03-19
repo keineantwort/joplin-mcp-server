@@ -25,8 +25,12 @@ services:
       - JOPLIN_TOKEN=${JOPLIN_TOKEN}
       - JOPLIN_HOST=joplin-cli
       - JOPLIN_PORT=41184
-      - MCP_TRANSPORT=streamable-http
+      - MCP_TRANSPORT=sse
       - JOPLIN_NOTEBOOK_FILTER=${JOPLIN_NOTEBOOK_FILTER:-}
+      - AUTHENTIK_URL=${AUTHENTIK_URL}
+      - AUTHENTIK_SLUG=${AUTHENTIK_SLUG:-joplin-mcp}
+      - AUTHENTIK_CLIENT_ID=${AUTHENTIK_CLIENT_ID}
+      - AUTHENTIK_CLIENT_SECRET=${AUTHENTIK_CLIENT_SECRET}
     ports:
       - "${MCP_PORT:-8000}:8000"
     depends_on:
