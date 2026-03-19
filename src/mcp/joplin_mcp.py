@@ -482,21 +482,37 @@ async def run_sse_with_auth() -> None:
     # --- OAuth Proxy Endpoints (forward to Authentik) ---
 
     async def oauth_authorize(request: Request):
-        """Redirect authorization requests to Authentik."""
+        """Redirect authorization requests to Authentik.
+
+        Ensures 'offline_access' is included in the scope parameter so that
+        Authentik issues a refresh token alongside the access token.
+        """
         from starlette.responses import RedirectResponse
-        qs = str(request.url.query)
-        redirect_url = f"{AUTHENTIK_AUTHORIZE_URL}?{qs}" if qs else AUTHENTIK_AUTHORIZE_URL
+        from urllib.parse import urlencode, parse_qs
+        params = parse_qs(str(request.url.query), keep_blank_values=True)
+        # Inject offline_access into scope if not already present
+        scope_values = params.get("scope", [""])[0].split()
+        if "offline_access" not in scope_values:
+            scope_values.append("offline_access")
+            params["scope"] = [" ".join(scope_values)]
+        # Rebuild query string (parse_qs returns lists, flatten for urlencode)
+        flat_params = {k: v[0] for k, v in params.items()}
+        redirect_url = f"{AUTHENTIK_AUTHORIZE_URL}?{urlencode(flat_params)}"
         return RedirectResponse(url=redirect_url, status_code=302)
 
     async def oauth_token(request: Request):
         """Proxy token requests to Authentik."""
         body = await request.body()
+        logger.info("Token request: %s", body.decode("utf-8", errors="replace"))
         headers = {
             "content-type": request.headers.get("content-type", "application/x-www-form-urlencoded"),
         }
         async with httpx.AsyncClient() as client:
             resp = await client.post(AUTHENTIK_TOKEN_URL, content=body, headers=headers)
-        return JSONResponse(resp.json(), status_code=resp.status_code)
+        token_data = resp.json()
+        logger.info("Token response: status=%s, has_refresh_token=%s, expires_in=%s",
+                     resp.status_code, "refresh_token" in token_data, token_data.get("expires_in"))
+        return JSONResponse(token_data, status_code=resp.status_code)
 
     # --- MCP SSE Endpoints ---
 
