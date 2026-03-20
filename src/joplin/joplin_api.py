@@ -424,7 +424,8 @@ class JoplinAPI:
         """
         params = {
             "query": query,
-            "limit": limit
+            "limit": limit,
+            "fields": "id,title,body,created_time,updated_time,is_todo,parent_id",
         }
         response = self._make_request("GET", "search", params=params)
         return PaginatedResponse(
