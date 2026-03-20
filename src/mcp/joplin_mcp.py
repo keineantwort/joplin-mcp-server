@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.joplin.joplin_api import JoplinAPI, JoplinFolder
 from src.joplin.joplin_utils import get_token_from_env, MarkdownContent
+from src.utils.summarizer import summarize_notes
 
 # Configure logging
 logging.basicConfig(
@@ -200,6 +201,9 @@ async def sync_notes() -> dict:
 async def search_notes(query: str, limit: int = 100) -> dict:
     """Search for notes in Joplin using full-text search.
 
+    Returns summarized results with relevance scores. Use get_note() to
+    retrieve the full body of a specific note.
+
     Args:
         query: Search query string
         limit: Maximum number of results (default: 100)
@@ -210,7 +214,8 @@ async def search_notes(query: str, limit: int = 100) -> dict:
     try:
         results = api.search_notes(query=query, limit=limit)
         notes = [_note_to_dict(n) for n in results.items if _folder_allowed(n.parent_id)]
-        return {"status": "success", "total": len(notes), "notes": notes}
+        summarized = await summarize_notes(notes, query=query)
+        return {"status": "success", "total": len(summarized), "notes": summarized}
     except Exception as e:
         logger.error("Error searching notes: %s", e)
         return {"error": str(e)}
@@ -258,6 +263,8 @@ async def list_notebooks() -> dict:
 async def list_notes_in_notebook(notebook_id: str, limit: int = 100) -> dict:
     """List all notes in a specific notebook/folder.
 
+    Returns summarized notes. Use get_note() to retrieve the full body.
+
     Args:
         notebook_id: ID of the notebook/folder
         limit: Maximum number of results (default: 100)
@@ -270,7 +277,8 @@ async def list_notes_in_notebook(notebook_id: str, limit: int = 100) -> dict:
     try:
         results = api.get_notes_in_folder(notebook_id, limit=limit)
         notes = [_note_to_dict(n) for n in results.items]
-        return {"status": "success", "total": len(notes), "has_more": results.has_more, "notes": notes}
+        summarized = await summarize_notes(notes)
+        return {"status": "success", "total": len(summarized), "has_more": results.has_more, "notes": summarized}
     except Exception as e:
         logger.error("Error listing notes in notebook: %s", e)
         return {"error": str(e)}
@@ -371,6 +379,8 @@ async def get_tags() -> dict:
 async def get_notes_by_tag(tag_id: str, limit: int = 100) -> dict:
     """Get all notes that have a specific tag.
 
+    Returns summarized notes. Use get_note() to retrieve the full body.
+
     Args:
         tag_id: ID of the tag
         limit: Maximum number of results (default: 100)
@@ -381,7 +391,8 @@ async def get_notes_by_tag(tag_id: str, limit: int = 100) -> dict:
     try:
         results = api.get_notes_by_tag(tag_id, limit=limit)
         notes = [_note_to_dict(n) for n in results.items if _folder_allowed(n.parent_id)]
-        return {"status": "success", "total": len(notes), "has_more": results.has_more, "notes": notes}
+        summarized = await summarize_notes(notes)
+        return {"status": "success", "total": len(summarized), "has_more": results.has_more, "notes": summarized}
     except Exception as e:
         logger.error("Error getting notes by tag: %s", e)
         return {"error": str(e)}

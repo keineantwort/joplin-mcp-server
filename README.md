@@ -37,18 +37,30 @@ Claude.ai ──HTTPS──► Reverse Proxy (NPMPlus)
 | Tool | Type | Description |
 | ---- | ---- | ----------- |
 | `sync_notes` | sync | Trigger a full sync and wait for completion |
-| `search_notes` | read | Full-text search across notes |
-| `get_note` | read | Retrieve a single note with body |
+| `search_notes` | read | Full-text search with LLM relevance scoring and summaries |
+| `get_note` | read | Retrieve a single note with full body |
 | `list_notebooks` | read | List all notebooks/folders |
-| `list_notes_in_notebook` | read | List notes in a specific notebook |
+| `list_notes_in_notebook` | read | List notes in a notebook (with LLM summaries) |
 | `get_tags` | read | List all tags |
-| `get_notes_by_tag` | read | Get notes by tag |
+| `get_notes_by_tag` | read | Get notes by tag (with LLM summaries) |
 | `create_note` | write | Create a new note (triggers sync) |
 | `update_note` | write | Update an existing note (triggers sync) |
 | `delete_note` | write | Delete a note (triggers sync) |
 | `import_markdown` | write | Import a markdown file as note (triggers sync) |
 
 Write operations automatically trigger an async background sync so changes reach the Joplin Server within seconds. The `sync_notes` tool can be used to explicitly pull latest changes before reading.
+
+### LLM-Powered Summarization
+
+List and search tools (`search_notes`, `list_notes_in_notebook`, `get_notes_by_tag`) use a cheap LLM to pre-process results before returning them to Claude:
+
+- **Search**: Each note is scored for relevance (0–10) and summarized. Only relevant results are returned, sorted by score.
+- **List/Tag**: Each note body is replaced with a 1–2 sentence summary.
+- **get_note**: Always returns the full body (no summarization).
+
+This reduces token usage dramatically (e.g. 100 full note bodies → 20 scored summaries) and improves search quality through semantic relevance scoring beyond simple keyword matching.
+
+The LLM integration is **optional** — without an API key, it falls back to simple text truncation. Any OpenAI-compatible API works (DeepInfra, OpenAI, Ollama, vLLM, etc.).
 
 ## Quick Start (Docker)
 
@@ -132,6 +144,9 @@ All configuration is done via environment variables (see `.env.example`):
 | `AUTHENTIK_SLUG` | Application slug in Authentik | `joplin-mcp` |
 | `AUTHENTIK_CLIENT_ID` | OAuth2 Client ID from the Authentik Provider | — |
 | `AUTHENTIK_CLIENT_SECRET` | OAuth2 Client Secret from the Authentik Provider | — |
+| `LLM_API_URL` | OpenAI-compatible chat completions endpoint | `https://api.deepinfra.com/v1/openai/chat/completions` |
+| `LLM_API_KEY` | API key for the LLM provider (empty = disable summarization) | (empty) |
+| `LLM_MODEL` | Model identifier | `google/gemma-3-4b-it` |
 
 ## Local Development (without Docker)
 
