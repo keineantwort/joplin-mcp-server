@@ -63,22 +63,31 @@ async def summarize_notes(notes: list[dict], query: str | None = None) -> list[d
 
     if query:
         system_prompt = (
-            "You are a note relevance scorer. The user is searching for notes.\n"
-            "For each note, assess its relevance to the search query and provide a brief summary.\n\n"
-            "Respond with a JSON array (no markdown fencing) where each element has:\n"
-            '  - "index": the note number (integer)\n'
-            '  - "score": relevance score 0-10 (integer, 10 = perfect match)\n'
-            '  - "summary": 1-2 sentence summary of the note content\n\n'
-            "Only include notes with score >= 3. Order by score descending."
+            "You score notes for relevance to a search query.\n\n"
+            "RULES:\n"
+            "- Output ONLY a JSON array, no other text\n"
+            "- Each element: {\"index\": <int>, \"score\": <0-10>, \"summary\": \"<string>\"}\n"
+            "- summary: Describe what the note is about in ONE short sentence (max 20 words). "
+            "Do NOT copy the note text. Do NOT include markdown formatting.\n"
+            "- score: 0 = completely irrelevant, 10 = perfect match\n"
+            "- Only include notes with score >= 3\n"
+            "- Order by score descending\n\n"
+            "EXAMPLE output:\n"
+            '[{"index": 0, "score": 8, "summary": "Meeting notes about Q1 budget decisions and cost planning."}, '
+            '{"index": 2, "score": 5, "summary": "General project overview mentioning budget briefly."}]'
         )
         user_prompt = f"Search query: {query}\n\nNotes to evaluate:{notes_text}"
     else:
         system_prompt = (
-            "You are a note summarizer.\n"
-            "For each note, provide a brief summary.\n\n"
-            "Respond with a JSON array (no markdown fencing) where each element has:\n"
-            '  - "index": the note number (integer)\n'
-            '  - "summary": 1-2 sentence summary of the note content'
+            "You summarize notes.\n\n"
+            "RULES:\n"
+            "- Output ONLY a JSON array, no other text\n"
+            "- Each element: {\"index\": <int>, \"summary\": \"<string>\"}\n"
+            "- summary: Describe what the note is about in ONE short sentence (max 20 words). "
+            "Do NOT copy the note text. Do NOT include markdown formatting.\n\n"
+            "EXAMPLE output:\n"
+            '[{"index": 0, "summary": "Setup guide for deploying a Joplin MCP server with Docker."}, '
+            '{"index": 1, "summary": "Personal shopping list for weekend groceries."}]'
         )
         user_prompt = f"Notes to summarize:{notes_text}"
 
