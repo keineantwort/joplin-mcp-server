@@ -63,9 +63,16 @@ while IFS= read -r line; do
     line="${line%%$(printf '\r')}"
     [ -z "$line" ] && break
 done
+# Clear stale lock if the owning process is no longer alive
+if [ -f /tmp/sync.lock ]; then
+    LOCK_PID=$(cat /tmp/sync.lock 2>/dev/null)
+    if [ -z "$LOCK_PID" ] || ! kill -0 "$LOCK_PID" 2>/dev/null; then
+        rm -f /tmp/sync.lock
+    fi
+fi
 if [ ! -f /tmp/sync.lock ]; then
     (
-        touch /tmp/sync.lock
+        echo $$ > /tmp/sync.lock
         joplin sync >/dev/null 2>&1
         rm -f /tmp/sync.lock
     ) &
@@ -80,12 +87,20 @@ while IFS= read -r line; do
     line="${line%%$(printf '\r')}"
     [ -z "$line" ] && break
 done
-# Wait if another sync is already running
+# Wait for any running sync; detect and clear stale locks (60s max wait)
+WAITED=0
 while [ -f /tmp/sync.lock ]; do
+    LOCK_PID=$(cat /tmp/sync.lock 2>/dev/null)
+    if [ -z "$LOCK_PID" ] || ! kill -0 "$LOCK_PID" 2>/dev/null; then
+        rm -f /tmp/sync.lock
+        break
+    fi
     sleep 1
+    WAITED=$((WAITED + 1))
+    [ $WAITED -ge 60 ] && rm -f /tmp/sync.lock && break
 done
-touch /tmp/sync.lock
-if joplin sync 2>&1; then
+echo $$ > /tmp/sync.lock
+if joplin sync >/dev/null 2>&1; then
     MSG='{"status":"success"}'
 else
     MSG='{"status":"error","message":"sync failed"}'
