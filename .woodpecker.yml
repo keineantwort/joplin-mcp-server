@@ -23,7 +23,7 @@ steps:
   test:
     image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim
     commands:
-      - uv sync --frozen --dev --no-install-project
+      - uv sync --frozen --extra dev --no-install-project
       - uv run pytest test/ -v
 
   # ── joplin-cli Image bauen ────────────────────────────────────────────────
