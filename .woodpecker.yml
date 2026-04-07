@@ -28,24 +28,23 @@ steps:
 
   # ── joplin-cli Image bauen ────────────────────────────────────────────────
   build-joplin-cli:
-    image: plugins/docker
-    settings:
-      registry: 192.168.6.39:5000
-      repo: 192.168.6.39:5000/joplin-cli
-      tags: latest
-      context: joplin-cli/
-      dockerfile: joplin-cli/Dockerfile
-      insecure: true
+    image: gcr.io/kaniko-project/executor:debug
+    commands:
+      - /kaniko/executor
+          --context $CI_WORKSPACE/joplin-cli
+          --dockerfile $CI_WORKSPACE/joplin-cli/Dockerfile
+          --destination 192.168.6.39:5000/joplin-cli:latest
+          --insecure
 
   # ── joplin-mcp Image bauen ───────────────────────────────────────────────
   build-joplin-mcp:
-    image: plugins/docker
-    settings:
-      registry: 192.168.6.39:5000
-      repo: 192.168.6.39:5000/joplin-mcp
-      tags: latest
-      dockerfile: Dockerfile
-      insecure: true
+    image: gcr.io/kaniko-project/executor:debug
+    commands:
+      - /kaniko/executor
+          --context $CI_WORKSPACE
+          --dockerfile $CI_WORKSPACE/Dockerfile
+          --destination 192.168.6.39:5000/joplin-mcp:latest
+          --insecure
 
   # ── SSH Deploy ────────────────────────────────────────────────────────────
   deploy:
