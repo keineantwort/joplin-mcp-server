@@ -5,6 +5,7 @@
 #
 # Secrets (org-level in Woodpecker):
 #   SSH_DEPLOY_KEY  — privater Ed25519-Key
+#   GITHUB_TOKEN    — GitHub PAT mit repo-Schreibrecht (für Mirror-Push)
 #
 # Einmaliges Setup auf dem Ziel-LXC (als root):
 #   git config --global credential.helper store
@@ -47,6 +48,7 @@ steps:
           --insecure
 
   # ── SSH Deploy ────────────────────────────────────────────────────────────
+
   deploy:
     image: appleboy/drone-ssh
     settings:
@@ -57,3 +59,13 @@ steps:
       script:
         - git -C /srv/homelab pull
         - docker compose -f /srv/homelab/docker-compose/joplin-mcp.yml --project-name joplin-mcp --env-file /srv/homelab/config/joplin-mcp/.env up -d --pull always
+
+  # ── Mirror to GitHub ──────────────────────────────────────────────────────
+  sync-github:
+    image: alpine/git
+    environment:
+      GITHUB_TOKEN:
+        from_secret: GITHUB_TOKEN
+    commands:
+      - git remote add github https://keineantwort:$GITHUB_TOKEN@github.com/keineantwort/joplin-mcp-server.git
+      - git push github HEAD:main
