@@ -70,5 +70,6 @@ steps:
       FORGEJO_DEPLOY_TOKEN:
         from_secret: FORGEJO_DEPLOY_TOKEN
     commands:
-      - git clone --mirror https://martin:$FORGEJO_DEPLOY_TOKEN@forgejo.home.msc.wtf/martin/joplin-mcp-server.git /tmp/mirror
+      - git config --global url."https://martin:$FORGEJO_DEPLOY_TOKEN@forgejo.home.msc.wtf".insteadOf "https://forgejo.home.msc.wtf"
+      - git clone --mirror https://forgejo.home.msc.wtf/martin/joplin-mcp-server.git /tmp/mirror
       - cd /tmp/mirror && git push --mirror https://keineantwort:$GITHUB_TOKEN@github.com/keineantwort/joplin-mcp-server.git
