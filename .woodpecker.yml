@@ -67,5 +67,6 @@ steps:
       GITHUB_TOKEN:
         from_secret: GITHUB_TOKEN
     commands:
+      - git fetch --unshallow
       - git remote add github https://keineantwort:$GITHUB_TOKEN@github.com/keineantwort/joplin-mcp-server.git
       - git push --force github HEAD:main
