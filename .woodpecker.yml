@@ -6,7 +6,7 @@
 # Secrets (org-level in Woodpecker):
 #   SSH_DEPLOY_KEY  — privater Ed25519-Key
 #   GITHUB_TOKEN    — GitHub PAT mit repo-Schreibrecht (für Mirror-Push)
-#   FORGEJO_TOKEN   — Forgejo PAT für Martin (für Mirror-Push)
+#   FORGEJO_DEPLOY_TOKEN — Forgejo PAT für Martin (für Mirror-Push)
 #
 # Einmaliges Setup auf dem Ziel-LXC (als root):
 #   git config --global credential.helper store
@@ -67,8 +67,8 @@ steps:
     environment:
       GITHUB_TOKEN:
         from_secret: GITHUB_TOKEN
-      FORGEJO_TOKEN:
-        from_secret: FORGEJO_TOKEN
+      FORGEJO_DEPLOY_TOKEN:
+        from_secret: FORGEJO_DEPLOY_TOKEN
     commands:
-      - git clone --mirror https://martin:$FORGEJO_TOKEN@forgejo.home.msc.wtf/martin/joplin-mcp-server.git /tmp/mirror
+      - git clone --mirror https://martin:$FORGEJO_DEPLOY_TOKEN@forgejo.home.msc.wtf/martin/joplin-mcp-server.git /tmp/mirror
       - cd /tmp/mirror && git push --mirror https://keineantwort:$GITHUB_TOKEN@github.com/keineantwort/joplin-mcp-server.git
