@@ -58,8 +58,8 @@ steps:
       key:
         from_secret: SSH_DEPLOY_KEY
       script:
-        - git -C /srv/homelab pull
-        - docker compose -f /srv/homelab/docker-compose/joplin-mcp.yml --project-name joplin-mcp --env-file /srv/homelab/config/joplin-mcp/.env up -d --pull always
+        - git -C /srv/homelab fetch && git -C /srv/homelab reset --hard origin/main
+        - docker compose -f /srv/homelab/services/joplin-mcp/docker-compose.yml --project-name joplin-mcp --env-file /srv/homelab/config/joplin-mcp/.env up -d --pull always
 
   # ── Mirror to GitHub ──────────────────────────────────────────────────────
   sync-github:
