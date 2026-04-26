@@ -47,8 +47,17 @@ Claude.ai ──HTTPS──► Reverse Proxy (NPMPlus)
 | `update_note` | write | Update an existing note (triggers sync) |
 | `delete_note` | write | Delete a note (triggers sync) |
 | `import_markdown` | write | Import a markdown file as note (triggers sync) |
+| `add_attachment` | write | Upload a file (image, PDF, drawio, …) and embed it in a note |
+| `list_note_attachments` | read | List all attachments of a note |
+| `get_attachment` | read | Get attachment metadata (and optionally base64 content) |
 
 Write operations automatically trigger an async background sync so changes reach the Joplin Server within seconds. The `sync_notes` tool can be used to explicitly pull latest changes before reading.
+
+### Attachments
+
+`add_attachment` accepts the file either as a **base64-encoded string** (`data_base64`) or as a **local file path** (`file_path`). The MIME type is auto-detected from the filename. Images are embedded as `![title](:/id)`, all other files as `[title](:/id)`.
+
+This allows Claude.ai and Claude Code to attach screenshots, drawio diagrams, PDFs, or any other file directly to notes.
 
 ### LLM-Powered Summarization
 

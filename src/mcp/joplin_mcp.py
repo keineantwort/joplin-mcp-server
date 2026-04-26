@@ -18,7 +18,7 @@ from mcp.server.fastmcp import FastMCP
 # Add the src directory to the Python path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.joplin.joplin_api import JoplinAPI, JoplinFolder
+from src.joplin.joplin_api import JoplinAPI, JoplinFolder, JoplinResource
 from src.joplin.joplin_utils import get_token_from_env, MarkdownContent
 from src.utils.summarizer import summarize_notes
 
@@ -399,6 +399,170 @@ async def get_notes_by_tag(tag_id: str, limit: int = 100) -> dict:
 
 
 @mcp.tool()
+async def add_attachment(
+    note_id: str,
+    filename: str,
+    data_base64: str | None = None,
+    file_path: str | None = None,
+    mime_type: str | None = None,
+    embed_in_note: bool = True,
+) -> dict:
+    """Upload a file as an attachment and optionally embed it in a note.
+
+    Provide the file data either as base64-encoded content (data_base64) or as
+    a local file path (file_path). Exactly one must be supplied.
+
+    Images (image/*) are embedded as Markdown images: ![filename](:/id).
+    All other file types are embedded as links: [filename](:/id).
+
+    Args:
+        note_id: ID of the note to attach the file to
+        filename: Original filename including extension (e.g. "screenshot.png")
+        data_base64: File content encoded as base64
+        file_path: Absolute path to the local file
+        mime_type: MIME type; auto-detected from filename if omitted
+        embed_in_note: Append the resource reference to the note body (default: true)
+    """
+    _require_scope("joplin:attachments")
+    if not api:
+        return {"error": "Joplin API client not initialized"}
+    if data_base64 is None and file_path is None:
+        return {"error": "Provide either data_base64 or file_path"}
+    if data_base64 is not None and file_path is not None:
+        return {"error": "Provide only one of data_base64 or file_path, not both"}
+
+    try:
+        # Resolve file bytes
+        if file_path is not None:
+            raw = Path(file_path).read_bytes()
+        else:
+            import base64
+            raw = base64.b64decode(data_base64)
+
+        # Auto-detect MIME type from filename if not provided
+        if not mime_type:
+            import mimetypes
+            mime_type, _ = mimetypes.guess_type(filename)
+            if not mime_type:
+                mime_type = "application/octet-stream"
+
+        resource = api.upload_resource(data=raw, filename=filename, mime_type=mime_type)
+
+        if embed_in_note:
+            note = api.get_note(note_id)
+            existing_body = note.body or ""
+            if mime_type.startswith("image/"):
+                ref = f"![{resource.title}](:/{resource.id})"
+            else:
+                ref = f"[{resource.title}](:/{resource.id})"
+            new_body = f"{existing_body}\n\n{ref}".lstrip("\n")
+            api.update_note(note_id=note_id, body=new_body)
+            _trigger_sync_background()
+
+        return {
+            "status": "success",
+            "resource": {
+                "id": resource.id,
+                "title": resource.title,
+                "filename": resource.filename,
+                "mime": resource.mime,
+                "size": resource.size,
+            },
+            "embedded": embed_in_note,
+        }
+    except Exception as e:
+        logger.error("Error adding attachment: %s", e)
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def list_note_attachments(note_id: str) -> dict:
+    """List all attachments (resources) of a note.
+
+    Args:
+        note_id: ID of the note
+    """
+    _require_scope("joplin:get_note")
+    if not api:
+        return {"error": "Joplin API client not initialized"}
+    try:
+        resources = api.get_note_resources(note_id)
+        return {
+            "status": "success",
+            "total": len(resources),
+            "attachments": [
+                {
+                    "id": r.id,
+                    "title": r.title,
+                    "filename": r.filename,
+                    "mime": r.mime,
+                    "size": r.size,
+                }
+                for r in resources
+            ],
+        }
+    except Exception as e:
+        logger.error("Error listing attachments: %s", e)
+        return {"error": str(e)}
+
+
+@mcp.tool()
+async def get_attachment(resource_id: str, include_data: bool = False):
+    """Get metadata (and optionally content) of an attachment.
+
+    When include_data is true:
+    - Images are returned as native MCP ImageContent so Claude can visually analyze them.
+    - Text-based files (XML, drawio, Markdown, JSON, plain text) are returned as
+      decoded text in the JSON result under the key "content".
+    - Other binary files fall back to base64 under "data_base64".
+
+    Args:
+        resource_id: ID of the resource/attachment
+        include_data: If true, include file content for analysis (default: false)
+    """
+    import base64 as _b64
+    import json as _json
+    from mcp.types import ImageContent, TextContent
+
+    _require_scope("joplin:get_note")
+    if not api:
+        return {"error": "Joplin API client not initialized"}
+    try:
+        resource = api.get_resource(resource_id)
+        meta = {
+            "id": resource.id,
+            "title": resource.title,
+            "filename": resource.filename,
+            "mime": resource.mime,
+            "size": resource.size,
+        }
+
+        if not include_data:
+            return {"status": "success", "attachment": meta}
+
+        raw = api.get_resource_file(resource_id)
+
+        if resource.mime.startswith("image/"):
+            # Return as native ImageContent so Claude can visually analyze the image
+            return [
+                TextContent(type="text", text=_json.dumps({"status": "success", "attachment": meta})),
+                ImageContent(type="image", data=_b64.b64encode(raw).decode("ascii"), mimeType=resource.mime),
+            ]
+
+        # Try to decode as UTF-8 text (covers drawio/XML, Markdown, JSON, plain text, …)
+        try:
+            meta["content"] = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            meta["data_base64"] = _b64.b64encode(raw).decode("ascii")
+
+        return {"status": "success", "attachment": meta}
+
+    except Exception as e:
+        logger.error("Error getting attachment: %s", e)
+        return {"error": str(e)}
+
+
+@mcp.tool()
 async def import_markdown(file_path: str) -> dict:
     """Import a markdown file as a new note.
 
@@ -465,7 +629,7 @@ async def run_sse_with_auth() -> None:
                 "joplin:get_note", "joplin:search_notes", "joplin:list_notebooks",
                 "joplin:list_notes", "joplin:get_tags", "joplin:get_notes_by_tag",
                 "joplin:create_note", "joplin:update_note", "joplin:delete_note",
-                "joplin:import_markdown", "joplin:sync_notes",
+                "joplin:import_markdown", "joplin:sync_notes", "joplin:attachments",
             ],
             "bearer_methods_supported": ["header"],
         })

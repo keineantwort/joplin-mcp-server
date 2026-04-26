@@ -67,6 +67,32 @@ class JoplinTag:
         )
 
 @dataclass
+class JoplinResource:
+    """Represents a Joplin resource (file attachment).
+
+    Reference: https://joplinapp.org/help/api/references/rest_api/#resources
+    """
+
+    id: str
+    title: str
+    mime: str
+    filename: str
+    file_extension: str
+    size: int
+
+    @classmethod
+    def from_api_response(cls, data: dict[str, Any]) -> "JoplinResource":
+        return cls(
+            id=data["id"],
+            title=data.get("title", ""),
+            mime=data.get("mime", ""),
+            filename=data.get("filename", ""),
+            file_extension=data.get("file_extension", ""),
+            size=data.get("size", 0),
+        )
+
+
+@dataclass
 class JoplinNote:
     """Represents a Joplin note with its attributes.
 
@@ -535,6 +561,70 @@ class JoplinAPI:
         except Exception as e:
             logger.error("Blocking sync failed: %s", e)
             return {"status": "error", "message": str(e)}
+
+    def upload_resource(
+        self,
+        data: bytes,
+        filename: str,
+        mime_type: str,
+        title: str | None = None,
+    ) -> "JoplinResource":
+        """Upload a file as a Joplin resource (attachment).
+
+        Args:
+            data: Raw file bytes
+            filename: Original filename (e.g. "screenshot.png")
+            mime_type: MIME type (e.g. "image/png")
+            title: Display title; defaults to filename
+
+        Returns:
+            JoplinResource with the new resource's metadata
+        """
+        import json as _json
+        props = {"title": title or filename, "filename": filename}
+        url = f"{self.base_url}/resources"
+        params = {"token": self.token}
+        try:
+            response = requests.post(
+                url,
+                params=params,
+                files={"data": (filename, data, mime_type)},
+                data={"props": _json.dumps(props)},
+            )
+            response.raise_for_status()
+            return JoplinResource.from_api_response(response.json())
+        except requests.exceptions.RequestException as e:
+            logger.error("Resource upload failed: %s", e)
+            raise
+
+    def get_note_resources(self, note_id: str) -> list["JoplinResource"]:
+        """List all resources (attachments) for a note."""
+        params = {
+            "fields": "id,title,mime,filename,file_extension,size",
+        }
+        response = self._make_request("GET", f"notes/{note_id}/resources", params=params)
+        return [JoplinResource.from_api_response(item) for item in response.get("items", [])]
+
+    def get_resource(self, resource_id: str) -> "JoplinResource":
+        """Get resource metadata by ID."""
+        params = {"fields": "id,title,mime,filename,file_extension,size"}
+        response = self._make_request("GET", f"resources/{resource_id}", params=params)
+        return JoplinResource.from_api_response(response)
+
+    def get_resource_file(self, resource_id: str) -> bytes:
+        """Download the raw file content of a resource."""
+        url = f"{self.base_url}/resources/{resource_id}/file"
+        try:
+            response = requests.get(url, params={"token": self.token})
+            response.raise_for_status()
+            return response.content
+        except requests.exceptions.RequestException as e:
+            logger.error("Resource download failed: %s", e)
+            raise
+
+    def delete_resource(self, resource_id: str) -> None:
+        """Delete a resource by ID."""
+        self._make_request("DELETE", f"resources/{resource_id}")
 
     def get_notes_by_tag(
         self,
