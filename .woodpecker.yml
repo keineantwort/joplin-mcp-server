@@ -50,7 +50,7 @@ steps:
   deploy:
     image: appleboy/drone-ssh
     settings:
-      host: proxmox2
+      host: 192.168.6.52
       username: root
       key:
         from_secret: SSH_DEPLOY_KEY
