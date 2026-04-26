@@ -1,19 +1,16 @@
 # joplin-mcp-server — Woodpecker CI Build + Deploy Pipeline
 #
 # Baut beide Images und pusht sie in die interne Registry,
-# danach SSH-Deploy auf den Joplin-LXC.
+# danach SSH-Deploy auf LXC 111 (docker2) via proxmox2 (pct exec).
 #
 # Secrets (org-level in Woodpecker):
-#   SSH_DEPLOY_KEY  — privater Ed25519-Key
-#   GITHUB_TOKEN    — GitHub PAT mit repo-Schreibrecht (für Mirror-Push)
+#   SSH_DEPLOY_KEY       — privater Ed25519-Key (liegt auf proxmox2)
+#   GITHUB_TOKEN         — GitHub PAT mit repo-Schreibrecht (für Mirror-Push)
 #   FORGEJO_READ_TOKEN   — Forgejo PAT für Martin (für Mirror-Push)
 #
-# Einmaliges Setup auf dem Ziel-LXC (als root):
-#   git config --global credential.helper store
-#   printf "https://martin:FORGEJO_TOKEN@forgejo.home.msc.wtf\n" > ~/.git-credentials
-#   git clone https://forgejo.home.msc.wtf/martin/HomeLab /srv/homelab
-#   mkdir -p /srv/homelab/config/joplin-mcp
-#   cp /srv/joplin-mcp/.env /srv/homelab/config/joplin-mcp/.env   # bestehende Werte übernehmen
+# Die docker-compose.yml und .env für joplin-mcp werden vom HomeLab-Repo
+# via dessen eigener Woodpecker-Pipeline nach /srv/homelab/services/joplin-mcp/
+# deployed. Dieses Script zieht nur die neu gebauten Images.
 
 when:
   - event: push
@@ -53,13 +50,12 @@ steps:
   deploy:
     image: appleboy/drone-ssh
     settings:
-      host: 192.168.6.178
+      host: proxmox2
       username: root
       key:
         from_secret: SSH_DEPLOY_KEY
       script:
-        - git -C /srv/homelab fetch && git -C /srv/homelab reset --hard origin/main
-        - docker compose -f /srv/homelab/services/joplin-mcp/docker-compose.yml --project-name joplin-mcp --env-file /srv/homelab/config/joplin-mcp/.env up -d --pull always
+        - pct exec 111 -- docker compose -f /srv/homelab/services/joplin-mcp/docker-compose.yml --project-name joplin-mcp up -d --pull always
 
   # ── Mirror to GitHub ──────────────────────────────────────────────────────
   sync-github:
