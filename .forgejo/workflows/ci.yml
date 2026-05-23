@@ -1,0 +1,54 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: build and deploy
+        env:
+          SSH_KEY: ${{ secrets.SSH_DEPLOY_KEY }}
+        run: |
+          apt-get update -qq && apt-get install -y -q --no-install-recommends openssh-client rsync
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+
+          rsync -az --delete --exclude='.git' \
+            -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519" \
+            ./ root@192.168.6.178:/srv/build/joplin-mcp/
+
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 root@192.168.6.178 "
+            docker run --rm \
+              -v /srv/build/joplin-mcp:/app \
+              -w /app \
+              ghcr.io/astral-sh/uv:python3.11-bookworm-slim \
+              sh -c 'uv sync --frozen --extra dev --no-install-project && uv run pytest test/ -v' &&
+
+            docker build -t 192.168.6.39:5000/joplin-mcp:latest /srv/build/joplin-mcp/ &&
+            docker push 192.168.6.39:5000/joplin-mcp:latest &&
+
+            docker build -t 192.168.6.39:5000/joplin-cli:latest /srv/build/joplin-mcp/joplin-cli/ &&
+            docker push 192.168.6.39:5000/joplin-cli:latest &&
+
+            mkdir -p /srv/homelab/services &&
+            docker compose -f /srv/homelab/services/joplin-mcp/docker-compose.yml \
+              --project-name joplin-mcp up -d --pull always &&
+            docker image prune -a -f --filter 'until=72h'
+          "
+
+      - name: mirror to github
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORGEJO_READ_TOKEN: ${{ secrets.FORGEJO_READ_TOKEN }}
+        run: |
+          git clone --mirror \
+            https://oauth2:$FORGEJO_READ_TOKEN@forgejo.home.msc.wtf/martin/joplin-mcp-server.git \
+            /tmp/mirror
+          cd /tmp/mirror && git push --mirror \
+            https://keineantwort:$GITHUB_TOKEN@github.com/keineantwort/joplin-mcp-server.git
