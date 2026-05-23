@@ -44,11 +44,11 @@ jobs:
 
       - name: mirror to github
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          FORGEJO_READ_TOKEN: ${{ secrets.FORGEJO_READ_TOKEN }}
+          GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+          FORGEJO_TOKEN: ${{ github.token }}
         run: |
           git clone --mirror \
-            https://oauth2:$FORGEJO_READ_TOKEN@forgejo.home.msc.wtf/martin/joplin-mcp-server.git \
+            https://oauth2:$FORGEJO_TOKEN@forgejo.home.msc.wtf/martin/joplin-mcp-server.git \
             /tmp/mirror
           cd /tmp/mirror && git push --mirror \
-            https://keineantwort:$GITHUB_TOKEN@github.com/keineantwort/joplin-mcp-server.git
+            https://keineantwort:$GITHUB_PAT@github.com/keineantwort/joplin-mcp-server.git
